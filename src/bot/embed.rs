@@ -238,15 +238,15 @@ fn dog_value(dog: &DogSource) -> String {
 /// | 13 field names (`"Status"` through `"Dog Stale"`) | 73 |
 /// | `Status` value, longest [`ProcStatus`] word (`"waiting-restart"`) | 15 |
 /// | `Uptime` value, `u64::MAX` milliseconds with no exact unit | 20 |
-/// | `CPU` value, `format!("{:.1}%", f32::MAX)` | 42 |
+/// | `CPU` value, `format!("{:.1}%", f32::MIN)` | 43 |
 /// | `Memory` value, `u64::MAX` bytes with no exact unit | 20 |
 /// | `Restarts`, `PID`, `Sheep ID` values, three `u32::MAX`s | 30 |
 /// | `Instance` value, `u32::MAX` | 10 |
 /// | `Dog Stale` value, `"yes"` | 3 |
 /// | `Lambs`, `Fold`, `Smit`, `Dog` values, four at [`FIELD_VALUE_LIMIT`] | 4096 |
 ///
-/// `256 + 73 + 15 + 20 + 42 + 20 + 30 + 10 + 3 + 4096 = 4565`, under
-/// [`crate::limits::MESSAGE_CHARACTER_BUDGET`]'s 6,000 with 1,435 to
+/// `256 + 73 + 15 + 20 + 43 + 20 + 30 + 10 + 3 + 4096 = 4566`, under
+/// [`crate::limits::MESSAGE_CHARACTER_BUDGET`]'s 6,000 with 1,434 to
 /// spare. That margin is why [`FIELD_VALUE_LIMIT`] keeps Discord's own
 /// 1,024 ceiling rather than a lower one: only four of the thirteen
 /// fields need a cap at all, so there is room for every one of them at
@@ -489,8 +489,11 @@ mod tests {
     /// hand: every optional field present, the four built from an
     /// unbounded `String` (Lambs, Fold, Smit, Dog) each long enough to hit
     /// [`FIELD_VALUE_LIMIT`], and every numeric field at its type's widest
-    /// form. Reads the built embed's own JSON, the way Discord would see
-    /// it, and checks the sum against
+    /// form. `cpu_percent` uses `f32::MIN` rather than `f32::MAX`:
+    /// shep-core does not constrain it non-negative, and the sign in
+    /// `format!("{:.1}%", f32::MIN)` costs a character `f32::MAX` does not,
+    /// so `f32::MIN` is the true widest render. Reads the built embed's own
+    /// JSON, the way Discord would see it, and checks the sum against
     /// [`crate::limits::MESSAGE_CHARACTER_BUDGET`] itself rather than a
     /// number restated from it.
     #[test]
@@ -501,7 +504,7 @@ mod tests {
         worst.pid = Some(u32::MAX);
         worst.restarts = u32::MAX;
         worst.uptime_ms = u64::MAX;
-        worst.cpu_percent = Some(f32::MAX);
+        worst.cpu_percent = Some(f32::MIN);
         worst.memory_bytes = Some(u64::MAX);
         worst.instance = Some(u32::MAX);
         worst.lambs = Some(vec![Lamb::new(u32::MAX, "x".repeat(2_000))]);
