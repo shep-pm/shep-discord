@@ -57,6 +57,7 @@
 
 #![forbid(unsafe_code)]
 
+mod bot;
 mod cli;
 mod config;
 mod error;
