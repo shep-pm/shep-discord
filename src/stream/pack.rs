@@ -19,6 +19,14 @@ use super::buffer::Group;
 /// The longest an embed's `description` may be.
 pub const EMBED_DESCRIPTION_LIMIT: usize = 4096;
 
+/// The longest an embed's `title` may be. Discord's own per-embed limit,
+/// not something this crate chose: shep places no limit on a sheep's name
+/// (there is no such rule in shep-core's config validation or the daemon),
+/// so a title built from an unbounded name has to be capped here or
+/// [`chunks`] can hand [`into_messages`] a chunk whose title alone already
+/// exceeds [`MESSAGE_CHARACTER_BUDGET`].
+pub const EMBED_TITLE_LIMIT: usize = 256;
+
 /// The character budget for everything counted, summed across every embed
 /// on one message: every `title`, `description`, `field.name`,
 /// `field.value`, `footer.text` and `author.name`. This module only ever
@@ -37,15 +45,48 @@ pub struct Chunk {
     pub description: String,
 }
 
+/// Build a chunk's title from `name` and a `" (i/n)"` `suffix` (empty when
+/// the group fit in one chunk), truncating `name` rather than refusing it
+/// when the two together would exceed [`EMBED_TITLE_LIMIT`].
+///
+/// The suffix is the only thing that tells an operator a Discord message
+/// was split, so it is never what gets cut: this fits `suffix` first and
+/// truncates `name` into whatever budget is left, the same order
+/// `shep-cli`'s `lookout::view::flock::layout::fit` follows when it fits a
+/// name to a terminal column. A log line must never be dropped because a
+/// sheep has a long name (the same rule `names.rs` follows when it falls
+/// back to `"sheep <id>"`), so a name is shortened rather than the chunk
+/// being refused.
+fn title(name: &str, suffix: &str) -> String {
+    let full_length = name.chars().count() + suffix.chars().count();
+    if full_length <= EMBED_TITLE_LIMIT {
+        return format!("{name}{suffix}");
+    }
+
+    // One character pays for the ellipsis. `saturating_sub` rather than a
+    // plain subtraction: a suffix alone at or past the limit is a case this
+    // function still has to return something for, even though in practice
+    // `" (i/n)"` never approaches 256 characters on its own.
+    let name_budget = EMBED_TITLE_LIMIT
+        .saturating_sub(suffix.chars().count())
+        .saturating_sub(1);
+    let truncated_name: String = name.chars().take(name_budget).collect();
+    format!("{truncated_name}\u{2026}{suffix}")
+}
+
 /// Split `group`'s text into one or more [`Chunk`]s, none longer than
-/// [`EMBED_DESCRIPTION_LIMIT`] characters.
+/// [`EMBED_DESCRIPTION_LIMIT`] characters, and none with a title longer
+/// than [`EMBED_TITLE_LIMIT`] characters.
 ///
 /// Splits on character boundaries, not byte boundaries: Discord counts
 /// characters, so a byte based split could cut a multibyte character in
 /// half, or refuse a description this limit actually allows. A group that
 /// fits in one chunk gets a bare title; a group that needs more than one
 /// gets `"<name> (i/n)"` on each, so an operator reading a busy channel can
-/// tell a split message from an unrelated one under the same sheep.
+/// tell a split message from an unrelated one under the same sheep. shep
+/// places no limit on a sheep's name, so the title built from it is capped
+/// here, by [`title`], rather than assumed to already fit: this is what
+/// makes [`into_messages`]'s own budget invariant true.
 #[must_use]
 #[allow(
     dead_code,
@@ -63,12 +104,15 @@ pub fn chunks(group: &Group) -> Vec<Chunk> {
         .into_iter()
         .enumerate()
         .map(|(index, description)| {
-            let title = if total > 1 {
-                format!("{} ({}/{total})", group.name, index + 1)
+            let suffix = if total > 1 {
+                format!(" ({}/{total})", index + 1)
             } else {
-                group.name.clone()
+                String::new()
             };
-            Chunk { title, description }
+            Chunk {
+                title: title(&group.name, &suffix),
+                description,
+            }
         })
         .collect()
 }
@@ -79,12 +123,13 @@ pub fn chunks(group: &Group) -> Vec<Chunk> {
 /// `title.chars().count() + description.chars().count()` for the message
 /// being built, and starts a new message rather than let the next chunk
 /// push that sum over budget. A single chunk can never exceed the budget on
-/// its own, since a chunk's title is at most a sheep's name plus a short
-/// `" (i/n)"` suffix and its description is at most
-/// [`EMBED_DESCRIPTION_LIMIT`], and Discord's own 256 character title
-/// limit satisfies `4096 + 256 < 6000`, so every chunk always finds room in
-/// a message of its own even in the degenerate case where it shares one
-/// with nothing else.
+/// its own: it is [`chunks`] that establishes this, by capping every title
+/// at [`EMBED_TITLE_LIMIT`] and every description at
+/// [`EMBED_DESCRIPTION_LIMIT`], so `256 + 4096 = 4352 < 6000` and every
+/// chunk always finds room in a message of its own even in the degenerate
+/// case where it shares one with nothing else. This function has no
+/// guard of its own for a chunk over budget, because [`chunks`] is the
+/// only place `Chunk` values are built and it never produces one.
 #[must_use]
 #[allow(
     dead_code,
@@ -158,7 +203,8 @@ pub fn strip_ansi(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Chunk, EMBED_DESCRIPTION_LIMIT, MESSAGE_CHARACTER_BUDGET, chunks, into_messages, strip_ansi,
+        Chunk, EMBED_DESCRIPTION_LIMIT, EMBED_TITLE_LIMIT, MESSAGE_CHARACTER_BUDGET, chunks,
+        into_messages, strip_ansi,
     };
     use crate::stream::buffer::Group;
 
@@ -170,25 +216,35 @@ mod tests {
         }
     }
 
+    /// The count Discord itself sums across every embed on one message:
+    /// every chunk's `title.chars().count() + description.chars().count()`.
+    /// More than one test below needs this sum, once per message.
+    fn message_character_count(message: &[Chunk]) -> usize {
+        message
+            .iter()
+            .map(|chunk| chunk.title.chars().count() + chunk.description.chars().count())
+            .sum()
+    }
+
     #[test]
     fn a_short_group_is_one_untitled_chunk() {
-        let chunks = chunks(&group("web", "hello"));
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].title, "web");
-        assert_eq!(chunks[0].description, "hello");
+        let group_chunks = chunks(&group("web", "hello"));
+        assert_eq!(group_chunks.len(), 1);
+        assert_eq!(group_chunks[0].title, "web");
+        assert_eq!(group_chunks[0].description, "hello");
     }
 
     #[test]
     fn a_long_group_splits_at_the_description_limit_and_numbers_itself() {
-        let chunks = chunks(&group("web", &"x".repeat(EMBED_DESCRIPTION_LIMIT + 1)));
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].title, "web (1/2)");
-        assert_eq!(chunks[1].title, "web (2/2)");
+        let group_chunks = chunks(&group("web", &"x".repeat(EMBED_DESCRIPTION_LIMIT + 1)));
+        assert_eq!(group_chunks.len(), 2);
+        assert_eq!(group_chunks[0].title, "web (1/2)");
+        assert_eq!(group_chunks[1].title, "web (2/2)");
         assert_eq!(
-            chunks[0].description.chars().count(),
+            group_chunks[0].description.chars().count(),
             EMBED_DESCRIPTION_LIMIT
         );
-        assert_eq!(chunks[1].description.chars().count(), 1);
+        assert_eq!(group_chunks[1].description.chars().count(), 1);
     }
 
     /// The whole point of this module. Two full chunks is 8,192 characters,
@@ -198,34 +254,28 @@ mod tests {
     /// cleared the queue only on success.
     #[test]
     fn two_full_chunks_never_ride_on_one_message() {
-        let chunks = chunks(&group("web", &"x".repeat(EMBED_DESCRIPTION_LIMIT * 2)));
-        assert_eq!(chunks.len(), 2);
-        let messages = into_messages(chunks);
+        let group_chunks = chunks(&group("web", &"x".repeat(EMBED_DESCRIPTION_LIMIT * 2)));
+        assert_eq!(group_chunks.len(), 2);
+        let messages = into_messages(group_chunks);
         assert_eq!(messages.len(), 2, "each full chunk needs its own message");
         for message in &messages {
-            let total: usize = message
-                .iter()
-                .map(|chunk| chunk.title.chars().count() + chunk.description.chars().count())
-                .sum();
+            let total = message_character_count(message);
             assert!(total <= MESSAGE_CHARACTER_BUDGET, "{total} over budget");
         }
     }
 
     #[test]
     fn small_chunks_share_a_message_until_the_budget_is_spent() {
-        let chunks: Vec<Chunk> = (0..10)
+        let small_chunks: Vec<Chunk> = (0..10)
             .map(|i| Chunk {
                 title: format!("sheep{i}"),
                 description: "x".repeat(1_000),
             })
             .collect();
-        let messages = into_messages(chunks);
+        let messages = into_messages(small_chunks);
         assert!(messages.len() >= 2);
         for message in &messages {
-            let total: usize = message
-                .iter()
-                .map(|chunk| chunk.title.chars().count() + chunk.description.chars().count())
-                .sum();
+            let total = message_character_count(message);
             assert!(total <= MESSAGE_CHARACTER_BUDGET, "{total} over budget");
         }
         assert_eq!(
@@ -241,9 +291,9 @@ mod tests {
         // characters is legal and roughly 12 KiB on the wire, so a byte-based
         // split would refuse a message Discord accepts and, worse, a
         // byte-based limit check would let an over-long one through.
-        let chunks = chunks(&group("web", &"é".repeat(EMBED_DESCRIPTION_LIMIT)));
+        let group_chunks = chunks(&group("web", &"é".repeat(EMBED_DESCRIPTION_LIMIT)));
         assert_eq!(
-            chunks.len(),
+            group_chunks.len(),
             1,
             "4,096 characters is one chunk however many bytes it is"
         );
@@ -252,5 +302,56 @@ mod tests {
     #[test]
     fn ansi_escapes_do_not_reach_discord() {
         assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m"), "red");
+    }
+
+    /// A name past `EMBED_TITLE_LIMIT` is the input class the old doc
+    /// comment's unenforced assumption missed: nothing in shep caps a
+    /// sheep's name, so a title built straight from one could already
+    /// exceed the limit on its own before this fix.
+    #[test]
+    fn a_name_longer_than_the_title_limit_is_truncated_to_it() {
+        let long_name = "s".repeat(EMBED_TITLE_LIMIT * 2);
+        let group_chunks = chunks(&group(&long_name, "hello"));
+        assert_eq!(group_chunks.len(), 1);
+        assert_eq!(group_chunks[0].title.chars().count(), EMBED_TITLE_LIMIT);
+        assert!(group_chunks[0].title.ends_with('\u{2026}'));
+    }
+
+    /// A long name that also splits into several chunks still needs its
+    /// `" (i/n)"` suffix on every one: that suffix is the only thing that
+    /// tells an operator a message was split, so it is what a truncation
+    /// has to preserve rather than cut.
+    #[test]
+    fn a_long_name_across_several_chunks_keeps_its_suffix_on_every_title() {
+        let long_name = "s".repeat(EMBED_TITLE_LIMIT * 2);
+        let group_chunks = chunks(&group(&long_name, &"x".repeat(EMBED_DESCRIPTION_LIMIT + 1)));
+        assert_eq!(group_chunks.len(), 2);
+        assert!(group_chunks[0].title.ends_with(" (1/2)"));
+        assert!(group_chunks[1].title.ends_with(" (2/2)"));
+        for chunk in &group_chunks {
+            assert_eq!(chunk.title.chars().count(), EMBED_TITLE_LIMIT);
+        }
+    }
+
+    /// The invariant [`into_messages`]'s doc comment claims: every message
+    /// it returns fits Discord's real budget, even for the worst input this
+    /// module can be handed, a long name and a long text together.
+    #[test]
+    fn a_long_name_and_a_long_text_still_produce_messages_under_budget() {
+        let long_name = "s".repeat(EMBED_TITLE_LIMIT * 2);
+        let group_chunks = chunks(&group(&long_name, &"x".repeat(EMBED_DESCRIPTION_LIMIT * 3)));
+        let messages = into_messages(group_chunks);
+        assert!(!messages.is_empty());
+        for message in &messages {
+            let total = message_character_count(message);
+            assert!(total <= MESSAGE_CHARACTER_BUDGET, "{total} over budget");
+            for chunk in message {
+                assert!(
+                    chunk.title.chars().count() <= EMBED_TITLE_LIMIT,
+                    "{} over the title limit",
+                    chunk.title
+                );
+            }
+        }
     }
 }
