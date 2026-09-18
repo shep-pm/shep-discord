@@ -56,6 +56,7 @@
 
 mod config;
 mod error;
+mod stop;
 #[cfg(test)]
 mod test_support;
 
