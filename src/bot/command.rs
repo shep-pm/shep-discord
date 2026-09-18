@@ -26,13 +26,25 @@ use crate::{config::Config, error::Error, names::Names, shepherd::Live};
 /// here ever holds this lock across an `.await`, and a plain mutex is the
 /// simpler tool for a lock that is only ever held across a few synchronous
 /// field reads.
-#[allow(
-    dead_code,
-    reason = "built by Task 11's bot::run and read by every Command; unreached from main until then"
-)]
+///
+/// `Clone` because [`crate::bot::run`] rebuilds a fresh [`interaction::Handler`]
+/// on every gateway reconnect attempt: every field is an `Arc`, so cloning
+/// shares the same shepherd session, config, and name cache across
+/// attempts rather than copying any of them.
+///
+/// [`interaction::Handler`]: crate::bot::interaction::Handler
+#[derive(Clone)]
 pub struct State {
     pub live: Arc<Live>,
+    #[allow(
+        dead_code,
+        reason = "read once a command needs its own resolved config, e.g. Task 13's /monitor reading monitor_interval; /system needs only live"
+    )]
     pub config: Arc<Config>,
+    #[allow(
+        dead_code,
+        reason = "read once a command needs to resolve a sheep's name, in Task 12's /shep; /system needs no name lookup"
+    )]
     pub names: Arc<Mutex<Names>>,
 }
 
@@ -56,15 +68,22 @@ pub trait Command: Send + Sync {
     /// [`registry`] carries.
     fn data(&self) -> CreateCommand;
 
+    /// The name Discord invokes this command by.
+    ///
+    /// A second, required method rather than reading `data().name` back
+    /// out: [`CreateCommand`] never gives that field a public getter (it
+    /// only takes a name in [`CreateCommand::new`] and serializes one out
+    /// again), so the one place that needs it for a lookup, matching an
+    /// incoming interaction's own name against a registered
+    /// [`Command`], would otherwise have to serialize `data()` to JSON on
+    /// every dispatch just to read a string back out of it.
+    fn name(&self) -> &'static str;
+
     /// Answer a `/name ...` invocation.
     ///
     /// # Errors
     /// Whatever the command itself could not do. The caller decides how to
     /// tell the user; this only decides what happened.
-    #[allow(
-        dead_code,
-        reason = "called by Task 11's interaction dispatch once a Command exists to implement it; unreached from main until then"
-    )]
     fn run<'a>(
         &'a self,
         ctx: &'a Context,
@@ -77,10 +96,6 @@ pub trait Command: Send + Sync {
     /// A no-op by default: most commands take no autocompleting option,
     /// and Discord's own reading of silence here is an empty suggestion
     /// list, never an error shown to the user.
-    #[allow(
-        dead_code,
-        reason = "called by Task 11's interaction dispatch for an Autocomplete interaction; unreached from main until then"
-    )]
     fn autocomplete<'a>(
         &'a self,
         _ctx: &'a Context,
@@ -97,10 +112,6 @@ pub trait Command: Send + Sync {
     ///
     /// # Errors
     /// Whatever answering the button could not do.
-    #[allow(
-        dead_code,
-        reason = "called by Task 11's interaction dispatch for a Component interaction; unreached from main until then"
-    )]
     fn button<'a>(
         &'a self,
         _ctx: &'a Context,
@@ -111,18 +122,14 @@ pub trait Command: Send + Sync {
     }
 }
 
-/// Every slash command this dog answers, boxed so [`register`] and Task
-/// 11's interaction dispatch can hold them in one collection.
+/// Every slash command this dog answers, boxed so [`register`] and
+/// [`crate::bot::interaction::Handler`] can hold them in one collection.
 ///
-/// Empty for now: this task is the trait and the registration plumbing,
-/// not a command. Task 12 adds `/shep` and Task 13 adds `/monitor`.
-#[allow(
-    dead_code,
-    reason = "called by Task 11's bot::run to build both the registered set and the dispatch table; unreached from main until then"
-)]
+/// `/system` is the first entry. Task 12 adds `/shep` and Task 13 adds
+/// `/monitor`.
 #[must_use]
 pub fn registry() -> Vec<Box<dyn Command>> {
-    Vec::new()
+    vec![Box::new(crate::bot::commands::system::System)]
 }
 
 /// Register every command in `commands` with `guild_id`, replacing
@@ -137,10 +144,6 @@ pub fn registry() -> Vec<Box<dyn Command>> {
 /// # Errors
 /// Whatever `GuildId::set_commands` returns: an invalid token, a payload
 /// the guild refuses, or the request itself failing.
-#[allow(
-    dead_code,
-    reason = "called by Task 11's bot::run at startup; unreached from main until then"
-)]
 pub async fn register(
     http: &Http,
     guild_id: GuildId,
@@ -191,12 +194,13 @@ mod tests {
         );
     }
 
-    /// `registry` carries no command yet: Task 12 and Task 13 add the
-    /// first ones. The two tests above would pass vacuously against an
-    /// empty registry either way, so this pins that the registry is
-    /// deliberately empty right now rather than accidentally so.
+    /// `/system` is the first command this dog registers. Task 12 and
+    /// Task 13 add `/shep` and `/monitor`; this pins that the registry
+    /// carries exactly the one command this task adds, rather than the
+    /// two generic tests above passing vacuously against an empty one.
     #[test]
-    fn the_registry_is_empty_until_a_later_task_adds_a_command() {
-        assert!(registry().is_empty());
+    fn the_registry_carries_the_system_command() {
+        let names: Vec<&'static str> = registry().iter().map(|c| c.name()).collect();
+        assert_eq!(names, vec!["system"]);
     }
 }

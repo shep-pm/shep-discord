@@ -188,10 +188,6 @@ impl Live {
     ///
     /// # Errors
     /// As [`Self::section`].
-    #[allow(
-        dead_code,
-        reason = "reached once the /system command renders it, in a later task"
-    )]
     pub async fn host_usage(&self) -> Result<Option<HostUsage>, Error> {
         match self.0.request(Request::HostUsage).await? {
             Response::HostUsage(usage) => Ok(usage),
