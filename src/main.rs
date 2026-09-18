@@ -408,11 +408,6 @@ fn main() -> ExitCode {
         }
     };
 
-    // Settled once, here, rather than wherever first needs it: it comes out
-    // of the environment shep spawned this process with, and that answer
-    // cannot change while this process runs.
-    let identity = Identity::from_env(|key| std::env::var(key).ok());
-
     if action == Action::PrintConfig {
         println!("{}", config::PRINT_CONFIG);
         return ExitCode::SUCCESS;
@@ -435,6 +430,10 @@ fn main() -> ExitCode {
         }
     };
     let paths = ShepPaths::resolve(&env, &home_dir);
+    // Settled here, once `env` exists, rather than wherever first needs it:
+    // it comes out of the environment shep spawned this process with, and
+    // that answer cannot change while this process runs.
+    let identity = Identity::from_env(env);
 
     // Built by hand rather than through `#[tokio::main]`: a runtime this
     // crate drops still waits for every task it spawned, and shutting it
