@@ -395,12 +395,13 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                 .await
                 .and_then(|toml| config::Config::from_toml(&toml))
             {
-                // Nothing reads `_config` yet: the Discord client and the
-                // log streaming it configures are a later task. Parsing it
-                // here already proves the connection and the parser agree
-                // end to end, and a bad section is worth telling the
-                // operator about now rather than only once something
-                // depends on it.
+                // Nothing calls `stream::run` with `_config` yet: that loop
+                // needs a real `stream::Sink`, and building one waits on a
+                // Discord client, which is a later task. Parsing the
+                // section here already proves the connection and the
+                // parser agree end to end, and a bad section is worth
+                // telling the operator about now rather than only once
+                // something depends on it.
                 Ok(_config) => {}
                 Err(err) => eprintln!("shep-discord: {err}"),
             }
