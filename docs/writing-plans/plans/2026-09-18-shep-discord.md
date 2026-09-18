@@ -6,7 +6,7 @@
 
 **Architecture:** One binary. A `ReconnectingClient` to the shepherd's Unix socket carries both a bus subscription (for log lines and process events) and ordinary requests. A serenity gateway client runs alongside it. `shepherd.rs` is the only module that builds a `Request`, so every other module is testable without a socket. Config arrives over the socket from `[discord]` in `dogs.toml`, never from the environment.
 
-**Tech Stack:** Rust 2024, `shep-client` 0.7.3, `serenity` 0.12, `tokio`, `schemars`, `serde`, `toml`.
+**Tech Stack:** Rust 2024, `shep-client` 0.8.2, `serenity` 0.12, `tokio`, `schemars`, `serde`, `toml`.
 
 **Spec:** [`docs/brainstorming/specs/2026-09-18-shep-discord-design.md`](../../brainstorming/specs/2026-09-18-shep-discord-design.md)
 
@@ -17,7 +17,7 @@ Every task's requirements implicitly include this section.
 - `#![forbid(unsafe_code)]` at the crate root.
 - Edition 2024, `rust-version = "1.88"`.
 - Licence `MIT OR Apache-2.0`.
-- `shep-client = "0.7.3"` is the only path to shep-core. Reach it as `shep_client::shep_core`, never a second direct dependency.
+- `shep-client = "0.8.2"` is the only path to shep-core. Reach it as `shep_client::shep_core`, never a second direct dependency. The floor is 0.8.2 because `Request::HostUsage`, which `/system` is built on, is absent from 0.7.4 and 0.8.0.
 - Every fallible `pub fn` carries a `# Errors` section. Errors implement `core::error::Error`, never `std::error::Error`.
 - No em dash and no en dash in any string printed for a person. `test_support::assert_no_dashes` is the check.
 - A type holding a secret or a socket path gets a hand-written `Debug` that redacts it, pinned by an exact-string test.
@@ -58,11 +58,14 @@ categories = ["command-line-utilities"]
 
 [dependencies]
 # The only path to shep-core: `shep_client::shep_core`, never a second
-# direct dependency. 0.7.3 is the floor for two reasons at once, both of
-# which shep-log-rotate's own Cargo.toml documents at length: protocol 8,
-# and the `schema` feature forwarding down to shep-core so `MemSize` and
-# `UpDuration` carry their `JsonSchema` impls.
-shep-client = "0.7.3"
+# direct dependency. 0.8.2 is the floor because `Request::HostUsage` is,
+# and `/system` is built on it. It is absent from 0.7.4 and from 0.8.0.
+# The two older reasons still hold underneath: the `schema` feature
+# forwards down to shep-core so `MemSize` and `UpDuration` carry their
+# `JsonSchema` impls, and the protocol number a dog announces has to be at
+# or above the shepherd's `MIN_SUPPORTED`. That number is still 8, so
+# announcing 9 locks out nothing.
+shep-client = "0.8.2"
 # `#[derive(JsonSchema)]` expands to absolute `schemars::` paths, so the
 # crate has to be nameable here even though shep-client carries it.
 schemars = { version = "1.2.2", default-features = false, features = ["derive", "std"] }
@@ -75,7 +78,7 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "builder", "rustls_backend"] }
 
 [dev-dependencies]
-shep-client = { version = "0.7.3", features = ["test-support"] }
+shep-client = { version = "0.8.2", features = ["test-support"] }
 serde_json = "1"
 tempfile = "3"
 

@@ -184,7 +184,9 @@ Autocomplete over the live flock is kept as it was.
 
 **`/monitor start|update|stop`** toggles the live monitor for this process's lifetime. It does not write config.
 
-**`/system`** answers from `Request::HostUsage`, which supplies `cpu_percent`, `memory_used_bytes` and `memory_total_bytes`, plus `disk_bytes_per_second` and `network_bytes_per_second` that the old embed never had. `discord-pm2`'s `services/system.ts`, 131 lines of `os.cpus()` delta arithmetic with a module-global race at `system.ts:27`, is deleted.
+**`/system`** answers from `Request::HostUsage`, which supplies `cpu_percent`, `memory_used_bytes` and `memory_total_bytes`, plus `disk_bytes_per_second` and `network_bytes_per_second` that the old embed never had.
+
+`Request::HostUsage` is why the `shep-client` floor is 0.8.2 rather than 0.7.3. It is absent from 0.7.4 and from 0.8.0, and first published in the 0.8 line; this design was written against shep's own working tree, where it already existed, which is the mistake. Raising the floor moves the protocol this dog announces from 8 to 9. That does not lock out an older shepherd, because a shepherd accepts any peer at or above its own `MIN_SUPPORTED` and that number is still 8. What it does mean is that a shepherd too old to know the verb answers `/system` with an error rather than an embed, which the README has to say. `discord-pm2`'s `services/system.ts`, 131 lines of `os.cpus()` delta arithmetic with a module-global race at `system.ts:27`, is deleted.
 
 ### Interaction dispatch
 
@@ -257,7 +259,7 @@ Follows shep-log-rotate, which is the only other third-party dog.
 - Edition 2024, `rust-version = "1.88"`, matching shep's own MSRV
 - `MIT OR Apache-2.0`
 - Published to crates.io through release-plz
-- `shep-client` by version, floor 0.7.3, the only path to shep-core. Never a second direct dependency: `shep_client::shep_core`
+- `shep-client` by version, floor 0.8.2, the only path to shep-core. Never a second direct dependency: `shep_client::shep_core`
 - `[profile.dev] debug = "line-tables-only"` and `[profile.dev.package."*"] debug = false`
 - `[profile.release] lto = "thin"`, `codegen-units = 1`. Not `strip`, and not `panic = "abort"`: symbols are what a profiler names frames with, and `shep-client` re-raises a panicked task with `resume_unwind`
 - The four CI gates: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features`, and `cargo +1.88 check --all-targets --all-features --locked`
