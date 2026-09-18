@@ -159,6 +159,22 @@ fn parse_duration(value: String, field: &'static str) -> Result<UpDuration, Erro
     })
 }
 
+/// Refuse a present `0`, naming `field` in the [`Error`].
+///
+/// A Discord snowflake is never `0`, so a `0` here is a placeholder an
+/// operator forgot to replace or a typo, not a value that could ever name a
+/// real guild or channel. Refusing it at parse time surfaces that mistake
+/// immediately, rather than as commands registered against a guild that
+/// does not exist or a send that fails on every flush. `None` passes
+/// through unchanged: an unset channel is legitimate, and only a `0`
+/// somebody actually wrote is refused.
+fn refuse_zero(value: Option<u64>, field: &'static str) -> Result<Option<u64>, Error> {
+    match value {
+        Some(0) => Err(Error::Config(format!("{field} must not be 0"))),
+        other => Ok(other),
+    }
+}
+
 impl Config {
     /// Parse the `[discord]` table's body into a resolved [`Config`].
     ///
@@ -171,9 +187,11 @@ impl Config {
     ///
     /// # Errors
     /// [`Error::Config`] when the text is not valid TOML, carries a key
-    /// this dog does not know, is missing `token` or `guild_id`, or gives
+    /// this dog does not know, is missing `token` or `guild_id`, gives
     /// `flush`, `coalesce` or `monitor_interval` a value [`UpDuration`]
-    /// does not accept.
+    /// does not accept, gives `buffer_lines` a `0`, or gives `guild_id`,
+    /// `monitor_channel`, `log_channel` or `err_channel` a present `0`: a
+    /// Discord snowflake is never `0`.
     pub fn from_toml(text: &str) -> Result<Self, Error> {
         let section: Section =
             toml::from_str(text).map_err(|err| Error::Config(err.to_string()))?;
@@ -184,6 +202,12 @@ impl Config {
         let guild_id = section
             .guild_id
             .ok_or_else(|| Error::Config("guild_id is required".to_owned()))?;
+        if guild_id == 0 {
+            return Err(Error::Config("guild_id must not be 0".to_owned()));
+        }
+        let monitor_channel = refuse_zero(section.monitor_channel, "monitor_channel")?;
+        let log_channel = refuse_zero(section.log_channel, "log_channel")?;
+        let err_channel = refuse_zero(section.err_channel, "err_channel")?;
 
         let flush = section
             .flush
@@ -212,10 +236,10 @@ impl Config {
         Ok(Self {
             token,
             guild_id,
-            monitor_channel: section.monitor_channel,
+            monitor_channel,
             monitor_interval,
-            log_channel: section.log_channel,
-            err_channel: section.err_channel,
+            log_channel,
+            err_channel,
             flush,
             coalesce,
             buffer_lines,
@@ -327,6 +351,34 @@ mod tests {
             .expect_err("refused")
             .to_string();
         assert!(err.contains("buffer_lines"), "{err}");
+    }
+
+    #[test]
+    fn a_zero_guild_id_is_refused_rather_than_accepted() {
+        // A Discord snowflake is never 0, so a 0 here is a placeholder an
+        // operator forgot to replace, not a real guild. Refusing it now
+        // means finding out here rather than once a command registers
+        // against a guild that does not exist.
+        let err = Config::from_toml("token = \"t\"\nguild_id = 0\n")
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("guild_id"), "{err}");
+    }
+
+    #[test]
+    fn a_zero_channel_is_refused_but_an_unset_one_is_fine() {
+        for field in ["monitor_channel", "log_channel", "err_channel"] {
+            let err = Config::from_toml(&format!("token = \"t\"\nguild_id = 1\n{field} = 0\n"))
+                .expect_err("refused")
+                .to_string();
+            assert!(err.contains(field), "{err}");
+        }
+
+        let config =
+            Config::from_toml("token = \"t\"\nguild_id = 1\n").expect("no channel is legitimate");
+        assert_eq!(config.monitor_channel, None);
+        assert_eq!(config.log_channel, None);
+        assert_eq!(config.err_channel, None);
     }
 
     #[test]
