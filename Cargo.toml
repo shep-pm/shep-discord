@@ -1,0 +1,50 @@
+[package]
+name = "shep-discord"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A Discord dog for shep: streams sheep logs to a channel and drives the flock from slash commands"
+repository = "https://github.com/shep-pm/shep-discord"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["shep", "process-manager", "discord", "bot"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+# The only path to shep-core: `shep_client::shep_core`, never a second
+# direct dependency. 0.7.3 is the floor for two reasons at once, both of
+# which shep-log-rotate's own Cargo.toml documents at length: protocol 8,
+# and the `schema` feature forwarding down to shep-core so `MemSize` and
+# `UpDuration` carry their `JsonSchema` impls.
+shep-client = "0.7.3"
+# `#[derive(JsonSchema)]` expands to absolute `schemars::` paths, so the
+# crate has to be nameable here even though shep-client carries it.
+schemars = { version = "1.2.2", default-features = false, features = ["derive", "std"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "time", "signal", "sync"] }
+# No `cache`: this dog holds its own state and a second copy would drift.
+# No `framework`/`standard_framework`: those serve prefix commands, which
+# have nothing to do with slash commands.
+serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "builder", "rustls_backend"] }
+
+[dev-dependencies]
+shep-client = { version = "0.7.3", features = ["test-support"] }
+serde_json = "1"
+tempfile = "3"
+
+# The same profile settings shep and shep-log-rotate carry, for the same
+# reasons. Debug info dominates a debug build and a dependency's is never
+# what is being debugged.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Size, not speed. Not `strip`, and not `panic = "abort"`: symbols are what
+# a profiler names frames with, and `shep-client` re-raises a panicked task
+# with `resume_unwind`, which needs a runtime that unwinds.
+[profile.release]
+lto = "thin"
+codegen-units = 1
