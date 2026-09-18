@@ -73,12 +73,19 @@ mod test_support;
 use std::{
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use shep_client::{ConnectError, LinkState, ReconnectingClient, shep_core::paths::ShepPaths};
 
-use crate::{cli::Action, error::Error, shepherd::Live, stop::Stop};
+use crate::{
+    cli::Action,
+    error::Error,
+    names::Names,
+    shepherd::Live,
+    stop::{Interrupted, Stop, wait},
+};
 
 /// The `[<name>]` section to read when `$SHEP_DOG_NAME` is unset, which
 /// means nothing adopted this process and somebody is running the binary by
@@ -212,27 +219,6 @@ fn refused(daemon_version: Option<&str>, message: &str) -> ExitCode {
 /// second.
 const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Whether a wait ended in a stop request rather than the clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Interrupted {
-    /// The interval elapsed.
-    No,
-    /// A stop was requested first, or had been already.
-    Yes,
-}
-
-/// Sleep for `interval`, or until a stop is requested.
-async fn wait(interval: Duration, stop: &mut Stop) -> Interrupted {
-    tokio::select! {
-        // Biased, stop first: a stop already requested wins over a sleep
-        // that is also ready, rather than the coin toss an unbiased select
-        // would make of it.
-        biased;
-        () = stop.wait() => Interrupted::Yes,
-        () = tokio::time::sleep(interval) => Interrupted::No,
-    }
-}
-
 /// The run loop.
 ///
 /// Nothing in here is fatal except a signal and a refused handshake. A
@@ -244,14 +230,65 @@ async fn wait(interval: Duration, stop: &mut Stop) -> Interrupted {
 /// There is no signal handling beyond `ctrl_c`, which is the clean-exit
 /// path for an operator running this binary in a terminal; see
 /// [`stop`] for why the shepherd owns everything else.
+///
+/// # Running the gateway alongside the stream
+///
+/// [`session::stream_once`] does not return until its bus subscription
+/// ends or `stop` resolves, so it stands in for this whole loop's ordinary
+/// work for as long as it runs. A gateway client started after this loop,
+/// the way this function reads top to bottom, would never get a turn:
+/// [`bot::run`] has the same shape, a loop that does not return until
+/// `stop` resolves either. Two functions shaped like that cannot run one
+/// after the other in the same task and both make progress; they have to
+/// run in two.
+///
+/// This loop is left as it was and [`bot::run`] is spawned as its own
+/// task, sharing this loop's own [`Live`] (behind an `Arc`, since a
+/// spawned task needs `'static` and cannot borrow this loop's stack) and
+/// watching a clone of the same [`Stop`], rather than the two other
+/// shapes considered:
+///
+/// - **One `tokio::select!` racing both loops in this one task.** Rejected
+///   because `select!` drops whichever branch did not finish first, and
+///   both branches here are meant to run forever until `stop` resolves;
+///   racing them would tear down whichever happened to still be mid
+///   request the moment the other's loop iteration completed, which is
+///   not a stop this dog was asked for.
+/// - **A second, fully independent shepherd connection for the gateway
+///   side,** each with its own reconnect loop, rather than sharing this
+///   one. Rejected as needless: [`Live`] wraps a [`ReconnectingClient`],
+///   which is itself already safe to share behind `&self`, and a second
+///   socket to the same shepherd would double the handshake traffic for
+///   no isolation this dog actually needs, since a refused handshake on
+///   either connection means the same thing and this loop already exits
+///   the whole process for it.
+///
+/// The gateway is started once, the first time this loop resolves a
+/// config with a `token` and `guild_id` in it, rather than restarted on
+/// every later reread the way the streaming side is: reconnecting the
+/// gateway every [`RECHECK_INTERVAL`] would drop and reopen it for no
+/// reason on almost every cycle, since a token or guild rarely changes,
+/// and rebuilding [`bot::interaction::Handler`] on a live reload of
+/// `dogs.toml` is a live-reload feature this task was not asked to add.
+/// If the token or guild does change later, this dog answers `/system`
+/// under the old one until the shepherd restarts it, the same way an
+/// operator's other config edits already wait for a restart to take
+/// effect anywhere sampling happens once at startup.
 async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     let mut stop = Stop::on_ctrl_c();
-    let mut session: Option<Live> = None;
+    let mut session: Option<Arc<Live>> = None;
     // Owned here rather than behind a process-global inside `stream_once`,
     // the same reason `stop` and `session` are: it is per-cycle state this
     // loop is the only caller of, and a static hides that state from every
     // test that would otherwise exercise it. See `session::warn_once`.
     let mut unresolved_warned = false;
+    // `Some` once the gateway has been started; see the doc above for why
+    // it starts once rather than on every cycle. Holding the handle at all,
+    // rather than discarding it, is only so a future change has somewhere
+    // to join it; this loop does not await it today, on the same
+    // "do not sit through work already underway" reasoning `main`'s own
+    // `runtime.shutdown_background()` already carries.
+    let mut gateway: Option<tokio::task::JoinHandle<()>> = None;
 
     if identity.handshake.is_none() {
         // Once, before the loop, rather than per connection: the answer
@@ -269,7 +306,7 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     loop {
         if session.is_none() {
             match connect(socket, identity).await {
-                Ok(live) => session = Some(live),
+                Ok(live) => session = Some(Arc::new(live)),
                 Err(Error::Connect(ConnectError::ProtocolMismatch {
                     daemon_version,
                     message,
@@ -296,28 +333,45 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                 .await
                 .and_then(|toml| config::Config::from_toml(&toml))
             {
-                // Streaming only when a channel names somewhere to send to:
-                // an operator who never set `log_channel` or `err_channel`
-                // gets no bus subscription spent on lines nothing reads.
-                // This await does not return until that subscription ends
-                // or `stop` resolves, so it stands in for this cycle's
-                // ordinary work for as long as it runs; when it returns,
-                // the loop's own wait and reconnect below try again.
-                Ok(config) if config.log_channel.is_some() || config.err_channel.is_some() => {
-                    let handshake = identity.handshake.as_deref();
-                    if let Err(err) = session::stream_once(
-                        live,
-                        handshake,
-                        &config,
-                        &mut unresolved_warned,
-                        &mut stop,
-                    )
-                    .await
-                    {
-                        eprintln!("shep-discord: {err}");
+                Ok(config) => {
+                    let config = Arc::new(config);
+
+                    if gateway.is_none() {
+                        let state = bot::command::State {
+                            live: Arc::clone(live),
+                            config: Arc::clone(&config),
+                            names: Arc::new(Mutex::new(Names::new())),
+                        };
+                        gateway = Some(tokio::spawn(bot::run(
+                            Arc::clone(&config),
+                            state,
+                            stop.clone(),
+                        )));
+                    }
+
+                    // Streaming only when a channel names somewhere to send
+                    // to: an operator who never set `log_channel` or
+                    // `err_channel` gets no bus subscription spent on lines
+                    // nothing reads. This await does not return until that
+                    // subscription ends or `stop` resolves, so it stands in
+                    // for this cycle's ordinary work for as long as it
+                    // runs; when it returns, the loop's own wait and
+                    // reconnect below try again.
+                    if config.log_channel.is_some() || config.err_channel.is_some() {
+                        let handshake = identity.handshake.as_deref();
+                        if let Err(err) = session::stream_once(
+                            live,
+                            handshake,
+                            &config,
+                            &mut unresolved_warned,
+                            &mut stop,
+                        )
+                        .await
+                        {
+                            eprintln!("shep-discord: {err}");
+                        }
                     }
                 }
-                Ok(_config) => {}
                 Err(err) => eprintln!("shep-discord: {err}"),
             }
         }
