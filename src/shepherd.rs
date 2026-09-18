@@ -39,22 +39,12 @@
 //! that reached some sheep and refused others outright. Naming only the
 //! accepted set would hide that refusal from the one place an operator
 //! would see it, so the sentence names both when `refused` is not empty.
-//!
-//! # What is missing here
-//!
-//! `Live::host_usage` is not implemented. It is not a hard call: `HostUsage`
-//! does not exist in shep-core 0.7.4, the version both `Cargo.toml`'s floor
-//! and this crate's lockfile pin. It ships in a later shep-core. Raising
-//! that floor is a separate decision with its own protocol-compatibility
-//! trade-offs, the kind `Cargo.toml`'s own `shep-client` entry points at
-//! shep-log-rotate's for, and not one to make silently inside a task about
-//! talking to the shepherd for the first time.
 
 use core::fmt;
 
 use shep_client::{
     EventStream, LinkState, ReconnectingClient,
-    shep_core::protocol::{ProcessInfo, Request, Response, SelectorSpec, SheepRefusal},
+    shep_core::protocol::{HostUsage, ProcessInfo, Request, Response, SelectorSpec, SheepRefusal},
 };
 
 use crate::error::Error;
@@ -192,6 +182,27 @@ impl Live {
         }
     }
 
+    /// What the machine the flock runs on is doing right now.
+    ///
+    /// `None` where the shepherd cannot sample its own host at all, which is
+    /// a state for a caller to render rather than an error. A shepherd too
+    /// old to know the verb is the other case and is an error: `HostUsage`
+    /// arrived with protocol 9, so an older one refuses it by name and
+    /// `/system` says so instead of drawing an empty embed.
+    ///
+    /// # Errors
+    /// As [`Self::section`].
+    #[allow(
+        dead_code,
+        reason = "reached once the /system command renders it, in a later task"
+    )]
+    pub async fn host_usage(&self) -> Result<Option<HostUsage>, Error> {
+        match self.0.request(Request::HostUsage).await? {
+            Response::HostUsage(usage) => Ok(usage),
+            other => Err(unexpected("a HostUsage", &other)),
+        }
+    }
+
     /// Act on matching sheep, and describe what happened in one sentence
     /// for a person to read, not a caller that wants structured data back.
     ///
@@ -288,6 +299,7 @@ fn named(response: &Response) -> String {
     match response {
         Response::Pong => "Pong".to_owned(),
         Response::Flock(sheep) => format!("a Flock of {}", sheep.len()),
+        Response::HostUsage(_) => "a HostUsage".to_owned(),
         Response::Described(sheep) => format!("a Described of {}", sheep.len()),
         Response::DogSection { .. } => "a DogSection".to_owned(),
         Response::Stopped(sheep) => format!("a Stopped of {}", sheep.len()),
@@ -585,6 +597,34 @@ mod tests {
         // The selector is unused on this path; any value proves that.
         let reply = live.act(Verb::Save, SelectorSpec::All).await.expect("ok");
         assert_eq!(reply, "saved 3 apps to roll.toml");
+    }
+
+    #[tokio::test]
+    async fn host_usage_hands_back_what_the_shepherd_sampled() {
+        let (live, mut fake) = test_live().await;
+        fake.expect(Request::HostUsage)
+            .answer(Response::HostUsage(Some(HostUsage {
+                cpu_percent: Some(12.5),
+                memory_used_bytes: 1024,
+                memory_total_bytes: 4096,
+                disk_bytes_per_second: Some((1, 2)),
+                network_bytes_per_second: None,
+            })));
+        let usage = live.host_usage().await.expect("ok").expect("sampled");
+        assert_eq!(usage.cpu_percent, Some(12.5));
+        assert_eq!(usage.memory_used_bytes, 1024);
+        assert_eq!(usage.disk_bytes_per_second, Some((1, 2)));
+    }
+
+    /// A host the shepherd cannot sample answers `None` rather than an
+    /// error, so `/system` can say it is not sampling instead of failing
+    /// the whole command.
+    #[tokio::test]
+    async fn an_unsampled_host_is_none_rather_than_an_error() {
+        let (live, mut fake) = test_live().await;
+        fake.expect(Request::HostUsage)
+            .answer(Response::HostUsage(None));
+        assert_eq!(live.host_usage().await.expect("ok"), None);
     }
 
     #[tokio::test]
