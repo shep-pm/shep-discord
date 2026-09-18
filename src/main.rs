@@ -59,6 +59,7 @@ mod error;
 mod names;
 mod shepherd;
 mod stop;
+mod stream;
 #[cfg(test)]
 mod test_support;
 
