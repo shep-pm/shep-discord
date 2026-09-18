@@ -1079,7 +1079,7 @@ git add src/bot/ && git commit -m "feat: render a sheep as an embed with action 
 - Create: `src/bot/command.rs`
 
 **Interfaces:**
-- Produces: `command::Command` (trait: `fn data(&self) -> CreateCommand`, `async fn run(&self, ctx, &CommandInteraction, &State) -> Result<(), Error>`, and provided no-op `autocomplete` and `button`), `command::registry() -> Vec<Box<dyn Command>>`, `command::register(&Http, GuildId, &[Box<dyn Command>]) -> Result<Vec<String>, serenity::Error>`.
+- Produces: `command::Command` (trait: `fn data(&self) -> CreateCommand`, plus `run`, `autocomplete` and `button` returning a boxed future, the last two with provided no-op bodies). Spelled as boxed futures rather than `async fn`: `registry()` hands back `Vec<Box<dyn Command>>`, and a native `async fn` in a trait is not object safe, so `dyn Command` would not compile, `command::registry() -> Vec<Box<dyn Command>>`, `command::register(&Http, GuildId, &[Box<dyn Command>]) -> Result<Vec<String>, serenity::Error>`.
 
 - [ ] **Step 1: Write the failing test**
 
