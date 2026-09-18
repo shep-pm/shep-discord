@@ -424,29 +424,65 @@ mod tests {
     /// checked as JSON rather than as a fragile substring, so a rename
     /// that keeps every field but changes its spelling still gets caught
     /// by the dash check on the true set of strings.
+    ///
+    /// `info(1, "web")` alone leaves `instance`, `lambs`, `fold`, `smit`,
+    /// `dog`, and `dog_stale` all `None`, so those six fields never appear
+    /// and this check never reaches them. The builder call below fills
+    /// every optional field so all thirteen field names, and every
+    /// fixed-word value among them, reach [`crate::test_support::assert_no_dashes`].
+    /// [`DogSource::Adopted`] is checked on a second embed, since `dog` only
+    /// ever holds one variant at a time.
     #[test]
     fn nothing_printed_for_a_person_carries_a_dash() {
-        let embed = process_embed(&info(1, "web"));
-        let json = serde_json::to_value(&embed).expect("json");
-        let title = json["title"].as_str().expect("title");
-        crate::test_support::assert_no_dashes(title);
-        for field in json["fields"].as_array().expect("fields") {
-            crate::test_support::assert_no_dashes(field["name"].as_str().expect("name"));
-            crate::test_support::assert_no_dashes(field["value"].as_str().expect("value"));
+        let built_in = ProcessInfo::builder(1, "web", ProcStatus::Online)
+            .instance(Some(0))
+            .lambs(Some(vec![Lamb::new(2, "child")]))
+            .fold(Some("main".to_owned()))
+            .smit(Some("smit".to_owned()))
+            .dog(Some(DogSource::BuiltIn))
+            .dog_stale(Some(true))
+            .build();
+
+        let adopted = ProcessInfo::builder(1, "web", ProcStatus::Online)
+            .dog(Some(DogSource::Adopted {
+                path: "/usr/local/bin/watchdog".to_owned(),
+            }))
+            .build();
+
+        for candidate in [built_in, adopted] {
+            let embed = process_embed(&candidate);
+            let json = serde_json::to_value(&embed).expect("json");
+            let title = json["title"].as_str().expect("title");
+            crate::test_support::assert_no_dashes(title);
+            for field in json["fields"].as_array().expect("fields") {
+                crate::test_support::assert_no_dashes(field["name"].as_str().expect("name"));
+                crate::test_support::assert_no_dashes(field["value"].as_str().expect("value"));
+            }
         }
     }
 
+    /// `Debug` is not a stable contract and a substring cannot tell a
+    /// present field from the same text appearing anywhere else in the
+    /// dump, so this reads the embed's own JSON `fields` array instead, the
+    /// way [`a_sheep_name_past_the_title_limit_is_truncated_not_refused`]
+    /// and [`embed_worst_case_field_arithmetic_stays_under_budget`] already
+    /// do.
     #[test]
     fn dog_stale_only_shows_up_when_true() {
-        let mut stale_true = info(1, "web");
-        stale_true.dog_stale = Some(true);
-        let rendered = format!("{:?}", process_embed(&stale_true));
-        assert!(rendered.contains("Dog Stale"));
+        let has_dog_stale_field = |dog_stale: Option<bool>| {
+            let mut candidate = info(1, "web");
+            candidate.dog_stale = dog_stale;
+            let json = serde_json::to_value(process_embed(&candidate)).expect("json");
+            json["fields"]
+                .as_array()
+                .expect("fields")
+                .iter()
+                .any(|field| field["name"].as_str() == Some("Dog Stale"))
+        };
 
-        let mut stale_false = info(1, "web");
-        stale_false.dog_stale = Some(false);
-        let rendered = format!("{:?}", process_embed(&stale_false));
-        assert!(!rendered.contains("Dog Stale"));
+        assert!(has_dog_stale_field(Some(true)));
+        assert!(!has_dog_stale_field(Some(false)));
+        assert!(!has_dog_stale_field(None));
     }
 
     /// The worst case [`process_embed`]'s own doc comment works out by
