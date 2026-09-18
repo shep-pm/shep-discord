@@ -354,6 +354,11 @@ async fn wait(interval: Duration, stop: &mut Stop) -> Interrupted {
 async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     let mut stop = Stop::on_ctrl_c();
     let mut session: Option<Live> = None;
+    // Owned here rather than behind a process-global inside `stream_once`,
+    // the same reason `stop` and `session` are: it is per-cycle state this
+    // loop is the only caller of, and a static hides that state from every
+    // test that would otherwise exercise it. See `session::warn_once`.
+    let mut unresolved_warned = false;
 
     if identity.handshake.is_none() {
         // Once, before the loop, rather than per connection: the answer
@@ -407,8 +412,14 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                 // the loop's own wait and reconnect below try again.
                 Ok(config) if config.log_channel.is_some() || config.err_channel.is_some() => {
                     let handshake = identity.handshake.as_deref();
-                    if let Err(err) =
-                        session::stream_once(live, handshake, &config, &mut stop).await
+                    if let Err(err) = session::stream_once(
+                        live,
+                        handshake,
+                        &config,
+                        &mut unresolved_warned,
+                        &mut stop,
+                    )
+                    .await
                     {
                         eprintln!("shep-discord: {err}");
                     }

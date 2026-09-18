@@ -5,8 +5,6 @@
 //! testing against a fake) apart from the reconnect and config-reread logic
 //! around it.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use crate::{config::Config, error::Error, names::Names, shepherd::Live, stop::Stop, stream};
 
 /// What `handshake` and the current [`Names`] cache resolve to.
@@ -45,14 +43,40 @@ fn resolve_own_id<'a>(handshake: Option<&'a str>, names: &Names) -> OwnId<'a> {
     }
 }
 
-/// Whether the last call into [`stream_once`] already printed this cycle's
-/// "not streaming yet" notice for an id that has not resolved.
+/// Whether this cycle's resolution should print the "not streaming yet"
+/// notice, threading the warn-once state through `warned` rather than a
+/// process-global.
 ///
-/// Reset to `false` the moment resolution succeeds, so an operator whose
-/// dog is adopted but stuck unresolved sees exactly one line for the whole
-/// outage rather than one every time `main`'s run loop retries, for as long
-/// as the outage lasts.
-static UNRESOLVED_WARNED: AtomicBool = AtomicBool::new(false);
+/// A pure function of two facts: was the previous call's outcome
+/// unresolved, and is this one. Kept apart from the I/O in [`stream_once`]
+/// so the dedup transition itself, warn once, stay silent while still
+/// unresolved, reset to silent the moment resolution succeeds, is testable
+/// with no [`Live`] and no socket behind it. A `static` living inside
+/// `stream_once` could not offer that: nothing in this crate could drive
+/// the warn-once transition without a live session, which is also the same
+/// module-global shape `assessment.md` names as a defect in the code this
+/// project ports, the `lastSnapshot` race at `system.ts:27`.
+fn warn_once(resolved: bool, warned: &mut bool) -> bool {
+    if resolved {
+        *warned = false;
+        false
+    } else {
+        !core::mem::replace(warned, true)
+    }
+}
+
+/// The message printed once per outage when this dog is adopted but its own
+/// id has not resolved yet.
+///
+/// A function rather than an inline `eprintln!` so the dash check can reach
+/// the text directly.
+fn unresolved_message(name: &str) -> String {
+    format!(
+        "shep-discord: {name} is adopted but its own id has not resolved yet, so this dog \
+         cannot yet tell its own lines apart from the rest of the bus; not streaming until it \
+         does"
+    )
+}
 
 /// Resolve this dog's own numeric id and drive [`stream::run`] until its
 /// subscription ends or `stop` resolves.
@@ -70,6 +94,11 @@ static UNRESOLVED_WARNED: AtomicBool = AtomicBool::new(false);
 /// here without error is enough to try again on the next pass rather than
 /// needing a retry loop of its own.
 ///
+/// `unresolved_warned` is the warn-once state [`warn_once`] threads across
+/// calls: `main`'s own run loop owns it for the lifetime of the process, the
+/// same way it owns `stop`, so a dog stuck unresolved prints exactly one
+/// line for the whole outage rather than one on every retry.
+///
 /// # Errors
 /// [`Error`] if the initial bus subscription fails; see [`stream::run`] for
 /// why nothing after that point is fatal.
@@ -77,6 +106,7 @@ pub async fn stream_once(
     live: &Live,
     handshake: Option<&str>,
     config: &Config,
+    unresolved_warned: &mut bool,
     stop: &mut Stop,
 ) -> Result<(), Error> {
     let mut names = Names::new();
@@ -86,16 +116,12 @@ pub async fn stream_once(
     let own_id = match resolve_own_id(handshake, &names) {
         OwnId::Unadopted => None,
         OwnId::Filtered(id) => {
-            UNRESOLVED_WARNED.store(false, Ordering::Relaxed);
+            warn_once(true, unresolved_warned);
             Some(id)
         }
         OwnId::Unresolved(name) => {
-            if !UNRESOLVED_WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!(
-                    "shep-discord: {name} is adopted but its own id has not resolved yet, \
-                     so this dog cannot yet tell its own lines apart from the rest of the \
-                     bus; not streaming until it does"
-                );
+            if warn_once(false, unresolved_warned) {
+                eprintln!("{}", unresolved_message(name));
             }
             return Ok(());
         }
@@ -145,5 +171,33 @@ mod tests {
             resolve_own_id(Some("shep-discord"), &names),
             OwnId::Unresolved("shep-discord")
         );
+    }
+
+    /// The dedup transition `warn_once` drives: an unresolved call warns,
+    /// a second unresolved call in a row does not, and a resolved call in
+    /// between resets it so the next outage warns again. Impossible to
+    /// exercise before this was a pure function of `warned` rather than a
+    /// process-global `stream_once` alone could flip.
+    #[test]
+    fn warn_once_warns_once_per_outage_and_resets_on_success() {
+        let mut warned = false;
+        assert!(warn_once(false, &mut warned), "first outage cycle warns");
+        assert!(
+            !warn_once(false, &mut warned),
+            "a repeat of the same outage stays silent"
+        );
+        assert!(
+            !warn_once(true, &mut warned),
+            "a resolved call never warns, and resets the state"
+        );
+        assert!(
+            warn_once(false, &mut warned),
+            "a fresh outage after a reset warns again"
+        );
+    }
+
+    #[test]
+    fn nothing_printed_for_a_person_carries_a_dash() {
+        crate::test_support::assert_no_dashes(&unresolved_message("shep-discord"));
     }
 }
