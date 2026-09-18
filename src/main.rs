@@ -122,6 +122,22 @@ fn unadopted_message(section: &str) -> String {
     )
 }
 
+/// The message printed when neither `$HOME` nor `$SHEP_HOME` is set.
+///
+/// A `const` rather than an inline `eprintln!`, the same reason
+/// [`unadopted_message`] is a function: it lets the dash check reach the
+/// text without running `main`.
+const NO_SHEP_HOME_MESSAGE: &str = "shep-discord: neither $HOME nor $SHEP_HOME is set, so there \
+                                     is no shep home to find a socket in.";
+
+/// The message printed when the Tokio runtime fails to build.
+///
+/// A function rather than an inline `eprintln!`, the same reason
+/// [`unadopted_message`] is one.
+fn cannot_start_runtime_message(err: &std::io::Error) -> String {
+    format!("shep-discord: cannot start a runtime: {err}")
+}
+
 /// What this process was asked to do.
 ///
 /// One flag, so no `clap`: a dependency that parses one argument would be
@@ -257,6 +273,19 @@ async fn connect(socket: &Path, identity: &Identity) -> Result<Live, Error> {
     Ok(Live::new(client))
 }
 
+/// The message printed when the shepherd refuses this dog's handshake.
+///
+/// A function rather than an inline `eprintln!` so the dash check can reach
+/// the text directly, the same reason [`unadopted_message`] is one.
+fn refused_message(daemon_version: Option<&str>, message: &str) -> String {
+    format!(
+        "shep-discord: the shepherd refused this dog's handshake, and no amount of \
+         reconnecting fixes a protocol-version skew. The shepherd reports {}, and said: \
+         {message}. Exiting so it can restart this dog from disk.",
+        daemon_version.unwrap_or("no version")
+    )
+}
+
 /// Say why this dog is stopping, and hand back the code to stop with.
 ///
 /// A refused handshake is protocol-version skew, and it is the one failure
@@ -269,12 +298,7 @@ async fn connect(socket: &Path, identity: &Identity) -> Result<Live, Error> {
 /// that path has already been replaced by the one that matches, so the
 /// restart is the fix rather than a retry of the same mistake.
 fn refused(daemon_version: Option<&str>, message: &str) -> ExitCode {
-    eprintln!(
-        "shep-discord: the shepherd refused this dog's handshake, and no amount of \
-         reconnecting fixes a protocol-version skew. The shepherd reports {}, and said: \
-         {message}. Exiting so it can restart this dog from disk.",
-        daemon_version.unwrap_or("no version")
-    );
+    eprintln!("{}", refused_message(daemon_version, message));
     ExitCode::FAILURE
 }
 
@@ -422,10 +446,7 @@ fn main() -> ExitCode {
         (Some(dir), _) => PathBuf::from(dir),
         (None, Some(_)) => PathBuf::new(),
         (None, None) => {
-            eprintln!(
-                "shep-discord: neither $HOME nor $SHEP_HOME is set, so there is no shep home \
-                 to find a socket in."
-            );
+            eprintln!("{NO_SHEP_HOME_MESSAGE}");
             return ExitCode::FAILURE;
         }
     };
@@ -445,7 +466,7 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(err) => {
-            eprintln!("shep-discord: cannot start a runtime: {err}");
+            eprintln!("{}", cannot_start_runtime_message(&err));
             return ExitCode::FAILURE;
         }
     };
@@ -470,6 +491,11 @@ mod tests {
         assert_no_dashes(&usage);
         assert_no_dashes(config::PRINT_CONFIG);
         assert_no_dashes(&unadopted_message(DEFAULT_NAME));
+        assert_no_dashes(&refused_message(Some("9"), "protocol too old"));
+        assert_no_dashes(NO_SHEP_HOME_MESSAGE);
+        assert_no_dashes(&cannot_start_runtime_message(&std::io::Error::other(
+            "no more file descriptors",
+        )));
     }
 
     /// An environment holding exactly one variable, which is the only one
