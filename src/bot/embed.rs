@@ -34,7 +34,7 @@ use crate::{
 /// Discord's own ceiling on a component's `custom_id`, in characters.
 #[allow(
     dead_code,
-    reason = "read by custom_id's own debug_assert; unreached from main until Task 11 wires bot::run to this module"
+    reason = "read by custom_id's own debug_assert; unreached from main until Task 12's /shep list draws it"
 )]
 pub const CUSTOM_ID_LIMIT: usize = 100;
 
@@ -47,7 +47,7 @@ pub const CUSTOM_ID_LIMIT: usize = 100;
 /// dog's dash check exists for and this one is not meant to pass.
 #[allow(
     dead_code,
-    reason = "called by custom_id; unreached from main until Task 11 wires bot::run to this module"
+    reason = "called by custom_id; unreached from main until Task 12's /shep list draws it"
 )]
 fn verb_str(verb: Verb) -> &'static str {
     match verb {
@@ -65,10 +65,6 @@ fn verb_str(verb: Verb) -> &'static str {
 /// The inverse of [`verb_str`]. `None` for anything else, [`Verb`]
 /// included: a match arm here for every variant is what keeps this in
 /// lock step with it.
-#[allow(
-    dead_code,
-    reason = "called by parse_custom_id; unreached from main until Task 11 wires bot::run to this module"
-)]
 fn verb_from_str(raw: &str) -> Option<Verb> {
     Some(match raw {
         "start" => Verb::Start,
@@ -93,7 +89,7 @@ fn verb_from_str(raw: &str) -> Option<Verb> {
 /// fail today.
 #[allow(
     dead_code,
-    reason = "called by process_buttons and Task 13's rediscovery; unreached from main until Task 11 wires bot::run to this module"
+    reason = "called by process_buttons and Task 13's rediscovery; unreached from main until Task 12's /shep list draws it"
 )]
 #[must_use]
 pub fn custom_id(verb: Verb, id: u32) -> String {
@@ -105,10 +101,6 @@ pub fn custom_id(verb: Verb, id: u32) -> String {
 /// Parse a `custom_id` [`custom_id`] could have written. `None` for
 /// anything else, including a well-formed `verb:name` from the old scheme
 /// this dog does not carry forward.
-#[allow(
-    dead_code,
-    reason = "called by Task 11's button dispatch and Task 13's rediscovery, unreached from main until then"
-)]
 #[must_use]
 pub fn parse_custom_id(raw: &str) -> Option<(Verb, u32)> {
     let (verb, id) = raw.split_once(':')?;
@@ -124,7 +116,7 @@ pub fn parse_custom_id(raw: &str) -> Option<(Verb, u32)> {
 /// spent the rest of its fields building never reaches the channel either.
 #[allow(
     dead_code,
-    reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
+    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
 )]
 fn embed_title(name: &str) -> String {
     limits::fit(name, EMBED_TITLE_LIMIT)
@@ -136,7 +128,7 @@ fn embed_title(name: &str) -> String {
 /// is a zero.
 #[allow(
     dead_code,
-    reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
+    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
 )]
 fn cpu_value(cpu_percent: Option<f32>) -> String {
     cpu_percent.map_or_else(|| "unknown".to_owned(), |percent| format!("{percent:.1}%"))
@@ -145,7 +137,7 @@ fn cpu_value(cpu_percent: Option<f32>) -> String {
 /// `memory_bytes`'s reading, on [`cpu_value`]'s own terms.
 #[allow(
     dead_code,
-    reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
+    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
 )]
 fn memory_value(memory_bytes: Option<u64>) -> String {
     memory_bytes.map_or_else(
@@ -157,7 +149,7 @@ fn memory_value(memory_bytes: Option<u64>) -> String {
 /// The OS pid, or `N/A` while the sheep is not running.
 #[allow(
     dead_code,
-    reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
+    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
 )]
 fn pid_value(pid: Option<u32>) -> String {
     pid.map_or_else(|| "N/A".to_owned(), |pid| pid.to_string())
@@ -172,7 +164,7 @@ fn pid_value(pid: Option<u32>) -> String {
 /// as unbounded as an operator-chosen fold or a sheep's own name.
 #[allow(
     dead_code,
-    reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
+    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
 )]
 fn lambs_value(lambs: &[Lamb]) -> String {
     if lambs.is_empty() {
@@ -194,7 +186,7 @@ fn lambs_value(lambs: &[Lamb]) -> String {
 /// unbounded as a sheep's own name.
 #[allow(
     dead_code,
-    reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
+    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
 )]
 fn dog_value(dog: &DogSource) -> String {
     match dog {
@@ -310,7 +302,7 @@ pub fn process_embed(info: &ProcessInfo) -> CreateEmbed {
 /// sixth verb needs a second row, never a sixth button on this one.
 #[allow(
     dead_code,
-    reason = "called by Task 11's interaction dispatch and Task 12's /shep list; unreached from main until then"
+    reason = "called by Task 12's /shep list, whose embed is the first to draw a sheep's buttons; unreached from main until then"
 )]
 pub fn process_buttons(info: &ProcessInfo) -> CreateActionRow {
     let button = |verb: Verb, label: &str, style: ButtonStyle| {
