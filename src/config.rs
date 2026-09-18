@@ -28,13 +28,7 @@ pub struct Section {
     // Never read through this field for logging: the hand-written `Debug`
     // below prints `Redacted` in its place regardless of whether a token is
     // set. `Config::from_toml` is the one reader that legitimately reaches
-    // it, to move it into `Config::token`, but nothing in `main` calls
-    // `from_toml` yet; that wiring lands once this dog reads `dogs.toml`
-    // over the socket, in a later task.
-    #[allow(
-        dead_code,
-        reason = "read by Config::from_toml, unreached from main until a later task wires it in"
-    )]
+    // it, to move it into `Config::token`.
     pub token: Option<String>,
     #[schemars(description = "The guild (server) this bot serves.")]
     pub guild_id: Option<u64>,
@@ -109,14 +103,13 @@ impl fmt::Debug for Section {
 /// there is nothing here for a timing-safe comparison to protect.
 #[derive(PartialEq)]
 pub struct Config {
-    // Never read through this field either, for the same reason as
-    // `Section::token` above: the hand-written `Debug` below redacts it
-    // rather than reading it, so it stays dead by design until whichever
-    // later task uses it to log into Discord.
-    #[allow(
-        dead_code,
-        reason = "redacted rather than read by Config's own Debug; read once a later task logs in with it"
-    )]
+    // Read through this field by the derived `PartialEq::eq` above, which
+    // is why this carries no `#[allow(dead_code)]` the way `Section::token`
+    // does: the generated `eq` counts as a read for dead-code purposes
+    // whether or not anything calls it in a plain build, and nothing here
+    // does. The hand-written `Debug` below still redacts it rather than
+    // reading it, which is a decision about what a log line should show,
+    // not evidence this field goes otherwise unread.
     pub token: String,
     pub guild_id: u64,
     pub monitor_channel: Option<u64>,
@@ -147,39 +140,17 @@ impl fmt::Debug for Config {
 }
 
 /// Defaults, named once so `PRINT_CONFIG` and the parser cannot disagree.
-// Read by `Config::from_toml`, which is itself unreached from `main` until
-// a later task wires it in; see the note on `Config` above.
-#[allow(
-    dead_code,
-    reason = "read by Config::from_toml, unreached from main until a later task wires it in"
-)]
 pub const DEFAULT_FLUSH_MS: u64 = 1_000;
-#[allow(
-    dead_code,
-    reason = "read by Config::from_toml, unreached from main until a later task wires it in"
-)]
 pub const DEFAULT_COALESCE_MS: u64 = 1_000;
-#[allow(
-    dead_code,
-    reason = "read by Config::from_toml, unreached from main until a later task wires it in"
-)]
 pub const DEFAULT_BUFFER_LINES: usize = 2_000;
 /// The floor `monitor_interval` is clamped up to, carried over from the old
 /// 0.25 minute minimum. A monitor refreshing faster than this spends the
 /// channel's whole rate budget redrawing embeds nobody asked for.
-#[allow(
-    dead_code,
-    reason = "read by Config::from_toml, unreached from main until a later task wires it in"
-)]
 pub const MIN_MONITOR_INTERVAL_MS: u64 = 15_000;
 
 /// Parse `value` into an [`UpDuration`], naming `field` in the [`Error`] so
 /// an operator can find the offending key without reading this dog's
 /// source.
-#[allow(
-    dead_code,
-    reason = "called by Config::from_toml, unreached from main until a later task wires it in"
-)]
 fn parse_duration(value: String, field: &'static str) -> Result<UpDuration, Error> {
     value.parse::<UpDuration>().map_err(|source| {
         Error::Config(format!(
@@ -203,12 +174,6 @@ impl Config {
     /// this dog does not know, is missing `token` or `guild_id`, or gives
     /// `flush`, `coalesce` or `monitor_interval` a value [`UpDuration`]
     /// does not accept.
-    // Unreached from `main` until a later task reads `dogs.toml` over the
-    // socket and calls this; only the tests below call it for now.
-    #[allow(
-        dead_code,
-        reason = "called once main() reads dogs.toml over the socket, in a later task"
-    )]
     pub fn from_toml(text: &str) -> Result<Self, Error> {
         let section: Section =
             toml::from_str(text).map_err(|err| Error::Config(err.to_string()))?;

@@ -25,13 +25,9 @@ pub enum Error {
     /// The shepherd answered, with something else. Names both sides,
     /// because "unexpected response" alone sends the reader to the wrong
     /// end of the wire.
-    // Unlike `Connect`/`Request`, nothing constructs this yet, not even
-    // inside a dead function: the request/response pairing that would
-    // raise it lands with the socket connection itself, in a later task.
-    #[allow(
-        dead_code,
-        reason = "constructed once the socket connection lands in a later task"
-    )]
+    ///
+    /// Constructed in `shepherd::unexpected`, the one place this crate
+    /// reads a `Response`.
     Unexpected { asked: String, got: String },
     /// `dogs.toml`'s `[discord]` section did not parse, or a value in it
     /// is outside what this dog accepts.

@@ -3,10 +3,10 @@
 //! Streams a sheep's stdout and stderr into Discord channels and, once the
 //! bot side lands, answers shep's own verbs from slash commands. This file
 //! is the process around that: the probe shep spawns the binary to ask, the
-//! argument parser, and the identity this dog announces itself with. The
-//! socket connection and the loop that reads from it are not here yet;
-//! they arrive with [`crate::config::Config`]'s parser and the module that
-//! builds this dog's requests.
+//! argument parser, the identity this dog announces itself with, and the
+//! run loop that holds the socket open. The Discord client and the log
+//! streaming this dog exists for are not here yet; they read the
+//! [`config::Config`] this loop already parses on every cycle.
 //!
 //! # The two questions shep asks the binary
 //!
@@ -56,13 +56,22 @@
 
 mod config;
 mod error;
+mod shepherd;
 mod stop;
 #[cfg(test)]
 mod test_support;
 
-use std::process::ExitCode;
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+    time::Duration,
+};
 
 use core::fmt;
+
+use shep_client::{ConnectError, LinkState, ReconnectingClient, shep_core::paths::ShepPaths};
+
+use crate::{error::Error, shepherd::Live, stop::Stop};
 
 /// The `[<name>]` section to read when `$SHEP_DOG_NAME` is unset, which
 /// means nothing adopted this process and somebody is running the binary by
@@ -234,6 +243,149 @@ impl Identity {
     }
 }
 
+/// Connect, announcing the handshake name when there is one.
+///
+/// The name is settled once, before the loop starts, rather than looked up
+/// per connection: it comes out of the environment shep spawned this
+/// process with, and a shepherd that restarted underneath the dog did not
+/// reach into that environment and rewrite it.
+async fn connect(socket: &Path, identity: &Identity) -> Result<Live, Error> {
+    let client = match &identity.handshake {
+        Some(name) => ReconnectingClient::connect_as_dog(socket, name).await?,
+        None => ReconnectingClient::connect(socket).await?,
+    };
+    Ok(Live::new(client))
+}
+
+/// Say why this dog is stopping, and hand back the code to stop with.
+///
+/// A refused handshake is protocol-version skew, and it is the one failure
+/// in here that waiting cannot fix: the daemon that refused is the only
+/// party that can, every later request on that connection fails, and the
+/// client's own supervisor has already given up rather than retrying it.
+///
+/// Exiting is also what makes the refusal actionable. The shepherd restarts
+/// a dog from its recorded path, and a skew usually means the binary at
+/// that path has already been replaced by the one that matches, so the
+/// restart is the fix rather than a retry of the same mistake.
+fn refused(daemon_version: Option<&str>, message: &str) -> ExitCode {
+    eprintln!(
+        "shep-discord: the shepherd refused this dog's handshake, and no amount of \
+         reconnecting fixes a protocol-version skew. The shepherd reports {}, and said: \
+         {message}. Exiting so it can restart this dog from disk.",
+        daemon_version.unwrap_or("no version")
+    );
+    ExitCode::FAILURE
+}
+
+/// How often the run loop rechecks [`Live::link`] and rereads its own
+/// `dogs.toml` section.
+///
+/// Fixed rather than read from `[discord]`, because nothing in that section
+/// governs this yet. Once the Discord client and the shepherd's own event
+/// bus are wired into this loop it stops polling on a timer at all,
+/// waiting on those instead; thirty seconds is short enough that a
+/// handshake refused after the fact is noticed promptly and long enough
+/// not to ask the shepherd for a section nothing yet acts on many times a
+/// second.
+const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Whether a wait ended in a stop request rather than the clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Interrupted {
+    /// The interval elapsed.
+    No,
+    /// A stop was requested first, or had been already.
+    Yes,
+}
+
+/// Sleep for `interval`, or until a stop is requested.
+async fn wait(interval: Duration, stop: &mut Stop) -> Interrupted {
+    tokio::select! {
+        // Biased, stop first: a stop already requested wins over a sleep
+        // that is also ready, rather than the coin toss an unbiased select
+        // would make of it.
+        biased;
+        () = stop.wait() => Interrupted::Yes,
+        () = tokio::time::sleep(interval) => Interrupted::No,
+    }
+}
+
+/// The run loop.
+///
+/// Nothing in here is fatal except a signal and a refused handshake. A
+/// failed cycle is printed and retried on the next interval, because the
+/// shepherd restarting underneath a dog is ordinary rather than
+/// exceptional, and exiting would ask the supervisor to restart this
+/// process for a condition that resolves itself on its own.
+///
+/// There is no signal handling beyond `ctrl_c`, which is the clean-exit
+/// path for an operator running this binary in a terminal; see
+/// [`stop`] for why the shepherd owns everything else.
+async fn run(socket: &Path, identity: &Identity) -> ExitCode {
+    let mut stop = Stop::on_ctrl_c();
+    let mut session: Option<Live> = None;
+
+    if identity.handshake.is_none() {
+        // Once, before the loop, rather than per connection: the answer
+        // cannot change while this process runs, and a dog whose socket is
+        // not up yet would otherwise print it on every retry.
+        //
+        // Loudly, because the two things it means are worth telling apart.
+        // Run by hand it is expected. Under a shepherd it means something
+        // stripped the environment between `shep adopt` and this process,
+        // and the daemon is about to call this dog silent and stop
+        // restarting it.
+        eprintln!("{}", unadopted_message(&identity.section));
+    }
+
+    loop {
+        if session.is_none() {
+            match connect(socket, identity).await {
+                Ok(live) => session = Some(live),
+                Err(Error::Connect(ConnectError::ProtocolMismatch {
+                    daemon_version,
+                    message,
+                    ..
+                })) => return refused(daemon_version.as_deref(), &message),
+                Err(err) => eprintln!("shep-discord: {err}"),
+            }
+        }
+
+        if let Some(live) = &session {
+            // Before this cycle's work rather than after a failed one: a
+            // refused link answers every request with the same closed
+            // connection, and a failed read would say nothing about why.
+            if let LinkState::Refused {
+                daemon_version,
+                message,
+            } = live.link()
+            {
+                return refused(daemon_version.as_deref(), &message);
+            }
+
+            match live
+                .section(&identity.section)
+                .await
+                .and_then(|toml| config::Config::from_toml(&toml))
+            {
+                // Nothing reads `_config` yet: the Discord client and the
+                // log streaming it configures are a later task. Parsing it
+                // here already proves the connection and the parser agree
+                // end to end, and a bad section is worth telling the
+                // operator about now rather than only once something
+                // depends on it.
+                Ok(_config) => {}
+                Err(err) => eprintln!("shep-discord: {err}"),
+            }
+        }
+
+        if wait(RECHECK_INTERVAL, &mut stop).await == Interrupted::Yes {
+            return ExitCode::SUCCESS;
+        }
+    }
+}
+
 fn main() -> ExitCode {
     // First, before this process opens a socket or a file. `shep adopt`
     // spawns this binary with `--version` and then with `--schema`, reads
@@ -266,16 +418,41 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if identity.handshake.is_none() {
-        // Loudly, because the two things it means are worth telling apart.
-        // Run by hand it is expected. Under a shepherd it means something
-        // stripped the environment between `shep adopt` and this process,
-        // and the daemon is about to call this dog silent and stop
-        // restarting it.
-        eprintln!("{}", unadopted_message(&identity.section));
-    }
+    let env = |key: &str| std::env::var(key).ok();
+    // The same reading shep's own CLI takes: `$SHEP_HOME` decides on its
+    // own when it is set, and `$HOME` is only needed for the default it
+    // replaces. An adopted dog always has `$SHEP_HOME`, so the third arm is
+    // for somebody running this binary by hand in a stripped environment.
+    let home_dir = match (std::env::var_os("HOME"), env("SHEP_HOME")) {
+        (Some(dir), _) => PathBuf::from(dir),
+        (None, Some(_)) => PathBuf::new(),
+        (None, None) => {
+            eprintln!(
+                "shep-discord: neither $HOME nor $SHEP_HOME is set, so there is no shep home \
+                 to find a socket in."
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let paths = ShepPaths::resolve(&env, &home_dir);
 
-    ExitCode::SUCCESS
+    // Built by hand rather than through `#[tokio::main]`: a runtime this
+    // crate drops still waits for every task it spawned, and shutting it
+    // down in the background instead means an exit does not sit through
+    // work already underway on ctrl-c.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("shep-discord: cannot start a runtime: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let code = runtime.block_on(run(&paths.socket, &identity));
+    runtime.shutdown_background();
+    code
 }
 
 #[cfg(test)]
