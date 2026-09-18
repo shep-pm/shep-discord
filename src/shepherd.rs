@@ -509,7 +509,10 @@ mod tests {
             .act(Verb::Restart, SelectorSpec::Fold("prod".to_owned()))
             .await
             .expect("ok");
-        assert_eq!(reply, "restarted web, refused worker: exceeded restart budget");
+        assert_eq!(
+            reply,
+            "restarted web, refused worker: exceeded restart budget"
+        );
     }
 
     #[tokio::test]
