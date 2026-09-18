@@ -17,11 +17,26 @@
 //! plain (non-test) build reaches everything here except [`Stop::requested`],
 //! which only this module's own tests call directly; the run loop learns a
 //! stop happened by `wait` resolving, not by polling it.
+//!
+//! # One request, two watchers
+//!
+//! Since the gateway came up, this process runs two concurrent loops
+//! (`main`'s own streaming loop and [`crate::bot::run`]'s gateway loop),
+//! and ctrl-c has to stop both rather than whichever happens to own the
+//! original [`Stop`]. [`Stop`] derives `Clone` for exactly that: it wraps a
+//! [`watch::Receiver`], which is already cheap to clone and already built
+//! to have many readers of one value, so a second loop watching the same
+//! request needed no new plumbing, only spelling out that the existing
+//! type supports it.
 
 use tokio::sync::watch;
 
 /// Where a stop request is read.
-#[derive(Debug)]
+///
+/// `Clone` because two concurrent loops now watch one request: see the
+/// module doc. Cloning shares the underlying request rather than copying
+/// it, the same as cloning any other [`watch::Receiver`].
+#[derive(Debug, Clone)]
 pub struct Stop(watch::Receiver<bool>);
 
 /// Where a stop request is made. Dropping it without requesting means no
@@ -89,6 +104,32 @@ impl Request {
     pub fn request(self) {
         // Nothing to do if every Stop is already gone.
         let _ = self.0.send(true);
+    }
+}
+
+/// Whether a wait ended in a stop request rather than the clock.
+///
+/// Shared by `main`'s streaming loop and [`crate::bot::run`]'s gateway
+/// loop: both retry a failed cycle on the same fixed-interval-or-stop
+/// shape, so the outcome they both need to branch on is defined once here
+/// rather than once per loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Interrupted {
+    /// The interval elapsed.
+    No,
+    /// A stop was requested first, or had been already.
+    Yes,
+}
+
+/// Sleep for `interval`, or until a stop is requested.
+pub async fn wait(interval: core::time::Duration, stop: &mut Stop) -> Interrupted {
+    tokio::select! {
+        // Biased, stop first: a stop already requested wins over a sleep
+        // that is also ready, rather than the coin toss an unbiased select
+        // would make of it.
+        biased;
+        () = stop.wait() => Interrupted::Yes,
+        () = tokio::time::sleep(interval) => Interrupted::No,
     }
 }
 
