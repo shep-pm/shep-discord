@@ -26,7 +26,10 @@ use shep_client::shep_core::{
     values::{MemSize, UpDuration},
 };
 
-use crate::shepherd::Verb;
+use crate::{
+    limits::{self, EMBED_TITLE_LIMIT},
+    shepherd::Verb,
+};
 
 /// Discord's own ceiling on a component's `custom_id`, in characters.
 #[allow(
@@ -34,16 +37,6 @@ use crate::shepherd::Verb;
     reason = "read by custom_id's own debug_assert; unreached from main until Task 11 wires bot::run to this module"
 )]
 pub const CUSTOM_ID_LIMIT: usize = 100;
-
-/// Discord's own ceiling on an embed title, in characters. Not part of
-/// this module's public interface: nothing outside [`process_embed`] needs
-/// to know it, unlike [`CUSTOM_ID_LIMIT`], which [`custom_id`]'s own tests
-/// check from outside.
-#[allow(
-    dead_code,
-    reason = "read by embed_title; unreached from main until Task 11 wires bot::run to this module"
-)]
-const EMBED_TITLE_LIMIT: usize = 256;
 
 /// One verb, as [`custom_id`] and [`parse_custom_id`] spell it on the wire.
 ///
@@ -134,11 +127,7 @@ pub fn parse_custom_id(raw: &str) -> Option<(Verb, u32)> {
     reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
 )]
 fn embed_title(name: &str) -> String {
-    if name.chars().count() <= EMBED_TITLE_LIMIT {
-        name.to_owned()
-    } else {
-        name.chars().take(EMBED_TITLE_LIMIT).collect()
-    }
+    limits::fit(name, EMBED_TITLE_LIMIT)
 }
 
 /// `cpu_percent`'s reading, or the word for why there is not one:

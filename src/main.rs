@@ -61,6 +61,7 @@ mod bot;
 mod cli;
 mod config;
 mod error;
+mod limits;
 mod names;
 mod session;
 mod shepherd;

@@ -15,24 +15,7 @@
 //! the character budget, never by a count of chunks.
 
 use super::buffer::Group;
-
-/// The longest an embed's `description` may be.
-pub const EMBED_DESCRIPTION_LIMIT: usize = 4096;
-
-/// The longest an embed's `title` may be. Discord's own per-embed limit,
-/// not something this crate chose: shep places no limit on a sheep's name
-/// (there is no such rule in shep-core's config validation or the daemon),
-/// so a title built from an unbounded name has to be capped here or
-/// [`chunks`] can hand [`into_messages`] a chunk whose title alone already
-/// exceeds [`MESSAGE_CHARACTER_BUDGET`].
-pub const EMBED_TITLE_LIMIT: usize = 256;
-
-/// The character budget for everything counted, summed across every embed
-/// on one message: every `title`, `description`, `field.name`,
-/// `field.value`, `footer.text` and `author.name`. This module only ever
-/// builds a `title` and a `description`, so [`into_messages`] only ever
-/// sums those two.
-pub const MESSAGE_CHARACTER_BUDGET: usize = 6000;
+use crate::limits::{self, EMBED_DESCRIPTION_LIMIT, EMBED_TITLE_LIMIT, MESSAGE_CHARACTER_BUDGET};
 
 /// One embed's worth of a [`Group`]: a title and a description, both under
 /// Discord's own per-field limits.
@@ -50,28 +33,22 @@ pub struct Chunk {
 /// when the two together would exceed [`EMBED_TITLE_LIMIT`].
 ///
 /// The suffix is the only thing that tells an operator a Discord message
-/// was split, so it is never what gets cut: this fits `suffix` first and
-/// truncates `name` into whatever budget is left, the same order
-/// `shep-cli`'s `lookout::view::flock::layout::fit` follows when it fits a
-/// name to a terminal column. A log line must never be dropped because a
-/// sheep has a long name (the same rule `names.rs` follows when it falls
-/// back to `"sheep <id>"`), so a name is shortened rather than the chunk
-/// being refused.
+/// was split, so it is never what gets cut: this reserves room for
+/// `suffix` first and hands [`limits::fit`] whatever budget is left for
+/// `name`, the same order `shep-cli`'s
+/// `lookout::view::flock::layout::fit` follows when it fits a name to a
+/// terminal column. A log line must never be dropped because a sheep has a
+/// long name (the same rule `names.rs` follows when it falls back to
+/// `"sheep <id>"`), so a name is shortened rather than the chunk being
+/// refused.
 fn title(name: &str, suffix: &str) -> String {
-    let full_length = name.chars().count() + suffix.chars().count();
-    if full_length <= EMBED_TITLE_LIMIT {
-        return format!("{name}{suffix}");
-    }
-
-    // One character pays for the ellipsis. `saturating_sub` rather than a
-    // plain subtraction: a suffix alone at or past the limit is a case this
-    // function still has to return something for, even though in practice
-    // `" (i/n)"` never approaches 256 characters on its own.
-    let name_budget = EMBED_TITLE_LIMIT
-        .saturating_sub(suffix.chars().count())
-        .saturating_sub(1);
-    let truncated_name: String = name.chars().take(name_budget).collect();
-    format!("{truncated_name}\u{2026}{suffix}")
+    // `saturating_sub` rather than a plain subtraction: a suffix alone at
+    // or past the limit is a case this function still has to return
+    // something for, even though in practice `" (i/n)"` never approaches
+    // 256 characters on its own. `fit` itself reserves the one character
+    // its own ellipsis needs, so there is no second `- 1` here.
+    let name_budget = EMBED_TITLE_LIMIT.saturating_sub(suffix.chars().count());
+    format!("{}{suffix}", limits::fit(name, name_budget))
 }
 
 /// Split `group`'s text into one or more [`Chunk`]s, none longer than
