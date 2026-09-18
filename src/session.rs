@@ -20,7 +20,7 @@ enum OwnId<'a> {
     /// output is on the bus. There is nothing to filter, and filtering
     /// nothing is correct rather than merely harmless.
     Unadopted,
-    /// `handshake` resolved to a numeric id. [`stream::State::on_event`]
+    /// `handshake` resolved to a numeric id. [`stream::state::State::on_event`]
     /// filters that id's own lines out of the stream.
     Filtered(u32),
     /// `handshake` names a process this dog announced itself as, but
