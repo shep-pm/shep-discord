@@ -938,8 +938,10 @@ async fn a_dropped_run_is_reported_rather_than_hidden() {
     state.on_event(BusEvent::Dropped { count: 37 });
     state.flush().await;
     let sent = sink.sent();
-    assert!(sent[0].description.contains("37"), "{:?}", sent[0].description);
-    assert!(sent[0].description.contains("dropped"), "{:?}", sent[0].description);
+    // The whole sentence, not two fragments of it: two `contains` calls
+    // pass on any string carrying both, including one that says the
+    // opposite. `dropped_notice` is the function under test here.
+    assert_eq!(sent[0].description, dropped_notice(37));
 }
 
 /// A batch Discord refuses on its shape will be refused identically
