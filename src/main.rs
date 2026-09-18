@@ -3,8 +3,9 @@
 //! Streams a sheep's stdout and stderr into Discord channels and, once the
 //! bot side lands, answers shep's own verbs from slash commands. This file
 //! is the process around that: the probe shep spawns the binary to ask, the
-//! argument parser, the identity this dog announces itself with, and the
-//! run loop that holds the socket open. That loop reads the
+//! identity this dog announces itself with, and the run loop that holds the
+//! socket open. The argument parser itself lives in [`cli`], a separate
+//! concern with its own reason to change. That loop reads the
 //! [`config::Config`] it parses on every cycle and, once `log_channel` or
 //! `err_channel` names one, hands it to [`stream::run`] for as long as that
 //! subscription lasts; the slash-command side of the bot is still a later
@@ -56,6 +57,7 @@
 
 #![forbid(unsafe_code)]
 
+mod cli;
 mod config;
 mod error;
 mod names;
@@ -72,11 +74,9 @@ use std::{
     time::Duration,
 };
 
-use core::fmt;
-
 use shep_client::{ConnectError, LinkState, ReconnectingClient, shep_core::paths::ShepPaths};
 
-use crate::{error::Error, shepherd::Live, stop::Stop};
+use crate::{cli::Action, error::Error, shepherd::Live, stop::Stop};
 
 /// The `[<name>]` section to read when `$SHEP_DOG_NAME` is unset, which
 /// means nothing adopted this process and somebody is running the binary by
@@ -86,33 +86,6 @@ use crate::{error::Error, shepherd::Live, stop::Stop};
 /// see [`Identity`] for why the two names part company here rather than
 /// sharing one fallback.
 const DEFAULT_NAME: &str = "discord";
-
-/// Everything this binary accepts, printed when it is handed anything else.
-///
-/// No em dashes and no en dashes: a terminal that cannot render one prints a
-/// replacement character in the middle of the one message that exists to be
-/// read by somebody who is already confused.
-const USAGE: &str = "\
-shep-discord: a Discord dog for shep.
-
-Usage:
-  shep-discord                 Run the dog: streams log lines and answers slash
-                               commands. This is what the shepherd runs after
-                               `shep adopt`.
-  shep-discord --print-config  Print a commented [discord] block for dogs.toml
-                               naming every option and its default, then exit.
-  shep-discord --version       Print the build and the protocol version it
-                               speaks, then exit.
-  shep-discord --schema        Print a JSON Schema for the [discord] section,
-                               then exit.
-
-The last two are what `shep adopt` asks this binary, and they are answered
-only as the first argument, which is the only one shep passes.
-
-Settings are read from `dogs.toml` over the shepherd's own socket, never
-from this process's arguments. The environment supplies two things and no
-more: $SHEP_HOME names the socket, and $SHEP_DOG_NAME names the dog. The
-shepherd sets both when it spawns this dog.";
 
 /// The message printed when nothing adopted this process.
 ///
@@ -141,88 +114,6 @@ const NO_SHEP_HOME_MESSAGE: &str = "shep-discord: neither $HOME nor $SHEP_HOME i
 /// [`unadopted_message`] is one.
 fn cannot_start_runtime_message(err: &std::io::Error) -> String {
     format!("shep-discord: cannot start a runtime: {err}")
-}
-
-/// What this process was asked to do.
-///
-/// One flag, so no `clap`: a dependency that parses one argument would be
-/// larger than the whole of this binary's argument surface, and that surface
-/// is deliberately closed. Everything configurable is configured in
-/// `dogs.toml`, where the shepherd can serve it.
-///
-/// shep's own two flags are not in here. `--version` and `--schema` are
-/// answered and exited on by [`shep_client::dogs::probe`] before [`main`]
-/// builds an [`Action`] at all, so this enum only ever sees a run that is
-/// not a probe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Action {
-    /// Run the dog until the shepherd stops this process.
-    Run,
-    /// Print a commented `[discord]` block and exit.
-    PrintConfig,
-}
-
-/// An argument this binary does not accept.
-///
-/// Carries the whole answer, [`USAGE`] included, so a caller prints one
-/// thing and is done.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Usage(String);
-
-impl fmt::Display for Usage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}\n\n{USAGE}", self.0)
-    }
-}
-
-impl core::error::Error for Usage {}
-
-impl Action {
-    /// Read the arguments, which do not include the program name.
-    ///
-    /// Takes an iterator rather than reading [`std::env::args`] itself, so
-    /// the whole argument surface is testable without a process.
-    ///
-    /// # Errors
-    /// [`Usage`] for any argument other than `--print-config`. Unknown flags
-    /// are refused rather than ignored: a dog that silently ignored a flag
-    /// it did not recognize would run with settings the caller thought they
-    /// had changed, and the same logic applies to anything this binary
-    /// might grow.
-    ///
-    /// A repeated `--print-config` is accepted. It names the same action
-    /// however many times it is given, and refusing it meant answering
-    /// `--print-config --print-config` with "shep-discord does not
-    /// understand --print-config", which is a confusing thing to tell
-    /// somebody who plainly does.
-    ///
-    /// `--version` and `--schema` are refused here and answered elsewhere,
-    /// which is not a contradiction. `probe` reads the first argument,
-    /// because the first argument is the only one shep passes a candidate
-    /// binary, so a probe flag anywhere else reaches this parser instead.
-    /// Refusing it with the general message would tell somebody that this
-    /// binary does not understand a flag it plainly does, so it gets its own.
-    pub fn parse<'a, I: IntoIterator<Item = &'a str>>(args: I) -> Result<Self, Usage> {
-        let mut action = Self::Run;
-        for arg in args {
-            match arg {
-                "--print-config" => action = Self::PrintConfig,
-                "--help" | "-h" => {
-                    return Err(Usage("shep-discord takes no options.".to_owned()));
-                }
-                probe @ ("--version" | "--schema") => {
-                    return Err(Usage(format!(
-                        "shep-discord answers {probe} as its first argument only, which is \
-                         where the shepherd asks it."
-                    )));
-                }
-                other => {
-                    return Err(Usage(format!("shep-discord does not understand {other}.")));
-                }
-            }
-        }
-        Ok(action)
-    }
 }
 
 /// The two names this dog needs, and the two different places they come
@@ -508,12 +399,10 @@ mod tests {
     /// No em dashes and no en dashes in anything this binary prints for a
     /// person: a terminal that cannot render one prints a replacement
     /// character in the middle of the one message that exists to be read by
-    /// somebody who is already confused.
+    /// somebody who is already confused. [`cli`]'s own dash test covers
+    /// [`cli::USAGE`] and the messages [`Action::parse`] builds.
     #[test]
     fn nothing_printed_for_a_person_carries_a_dash() {
-        assert_no_dashes(USAGE);
-        let usage = Action::parse(["--bogus"]).expect_err("refused").to_string();
-        assert_no_dashes(&usage);
         assert_no_dashes(config::PRINT_CONFIG);
         assert_no_dashes(&unadopted_message(DEFAULT_NAME));
         assert_no_dashes(&refused_message(Some("9"), "protocol too old"));
@@ -528,25 +417,6 @@ mod tests {
     fn only(key: &str, value: &str) -> impl Fn(&str) -> Option<String> {
         let (key, value) = (key.to_owned(), value.to_owned());
         move |asked| (asked == key).then(|| value.clone())
-    }
-
-    #[test]
-    fn print_config_is_the_only_argument() {
-        assert_eq!(Action::parse(["--print-config"]), Ok(Action::PrintConfig));
-        assert_eq!(Action::parse([]), Ok(Action::Run));
-        assert!(Action::parse(["--token"]).is_err());
-    }
-
-    #[test]
-    fn a_probe_flag_out_of_first_position_is_told_where_it_belongs() {
-        for flag in ["--version", "--schema"] {
-            let usage = Action::parse(["--print-config", flag])
-                .expect_err("refused")
-                .to_string();
-            assert!(usage.contains(flag), "{usage}");
-            assert!(usage.contains("first argument"), "{usage}");
-            assert!(!usage.contains("does not understand"), "{usage}");
-        }
     }
 
     #[test]
