@@ -28,6 +28,18 @@ pub const EMBED_TITLE_LIMIT: usize = 256;
 /// The longest an embed's `description` may be. Discord's own limit.
 pub const EMBED_DESCRIPTION_LIMIT: usize = 4096;
 
+/// The longest an embed's field `value` this crate lets through, in
+/// characters.
+///
+/// Discord's own ceiling on a field value is 1,024, and this crate keeps
+/// that ceiling rather than lowering it: see
+/// [`crate::bot::embed`]'s module doc for the arithmetic proving every
+/// field [`crate::bot::embed::process_embed`] can build, all present at
+/// once and each at this cap, still sums under [`MESSAGE_CHARACTER_BUDGET`]
+/// with room to spare. A lower cap is only needed when the arithmetic
+/// says so, and here it does not.
+pub const FIELD_VALUE_LIMIT: usize = 1024;
+
 /// The character budget for everything counted, summed across every embed
 /// on one message: every `title`, `description`, `field.name`,
 /// `field.value`, `footer.text` and `author.name`. Discord's own limit.

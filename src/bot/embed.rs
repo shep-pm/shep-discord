@@ -27,7 +27,7 @@ use shep_client::shep_core::{
 };
 
 use crate::{
-    limits::{self, EMBED_TITLE_LIMIT},
+    limits::{self, EMBED_TITLE_LIMIT, FIELD_VALUE_LIMIT},
     shepherd::Verb,
 };
 
@@ -165,23 +165,33 @@ fn pid_value(pid: Option<u32>) -> String {
 
 /// One lamb per `name (pid)`, joined with commas; `none` for a walk that
 /// found no descendants.
+///
+/// Capped at [`FIELD_VALUE_LIMIT`]: `lamb.name` comes from the OS process
+/// table, and shep does not bound either a process's own name or how many
+/// descendants a walk can find, so the joined string this builds is exactly
+/// as unbounded as an operator-chosen fold or a sheep's own name.
 #[allow(
     dead_code,
     reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
 )]
 fn lambs_value(lambs: &[Lamb]) -> String {
     if lambs.is_empty() {
-        "none".to_owned()
-    } else {
-        lambs
-            .iter()
-            .map(|lamb| format!("{} ({})", lamb.name, lamb.pid))
-            .collect::<Vec<_>>()
-            .join(", ")
+        return "none".to_owned();
     }
+    let joined = lambs
+        .iter()
+        .map(|lamb| format!("{} ({})", lamb.name, lamb.pid))
+        .collect::<Vec<_>>()
+        .join(", ");
+    limits::fit(&joined, FIELD_VALUE_LIMIT)
 }
 
 /// Where a dog came from, on [`shep_client::shep_core::protocol::DogSource`]'s own two cases.
+///
+/// Capped at [`FIELD_VALUE_LIMIT`]: [`DogSource::Adopted`]'s `path` is
+/// whatever an operator handed `shep adopt`, with no length rule in
+/// shep-core's config validation or the daemon, so it is exactly as
+/// unbounded as a sheep's own name.
 #[allow(
     dead_code,
     reason = "called by process_embed; unreached from main until Task 11 wires bot::run to this module"
@@ -189,7 +199,7 @@ fn lambs_value(lambs: &[Lamb]) -> String {
 fn dog_value(dog: &DogSource) -> String {
     match dog {
         DogSource::BuiltIn => "built in".to_owned(),
-        DogSource::Adopted { path } => format!("adopted: {path}"),
+        DogSource::Adopted { path } => limits::fit(&format!("adopted: {path}"), FIELD_VALUE_LIMIT),
         // `DogSource` is `#[non_exhaustive]`: a future variant renders here
         // rather than failing to compile against an older shep-client.
         _ => "unknown".to_owned(),
@@ -209,6 +219,41 @@ fn dog_value(dog: &DogSource) -> String {
 /// `max_memory_restart`, `autorestart`, or `interpreter`: none of the six
 /// has a source in [`ProcessInfo`], and this embed is shep-native rather
 /// than a PM2 embed with holes papered over with "Unknown".
+///
+/// # Why every field still fits under one message's budget
+///
+/// [`crate::limits::MESSAGE_CHARACTER_BUDGET`] is a per-message sum, and
+/// this function only ever builds one embed, so its own worst case is that
+/// embed's title plus every field name and value it can produce, all
+/// present at once. Four of the thirteen fields (Lambs, Fold, Smit, Dog)
+/// are built from a `String` shep does not bound, so each is capped at
+/// [`FIELD_VALUE_LIMIT`] by [`lambs_value`], [`dog_value`], or a direct
+/// [`limits::fit`] call; the other nine are either a fixed word or a
+/// number from a type with a known widest form, so they need no cap. The
+/// worst case, characters:
+///
+/// | piece | width |
+/// |---|---|
+/// | title (name, capped by [`embed_title`]) | 256 |
+/// | 13 field names (`"Status"` through `"Dog Stale"`) | 73 |
+/// | `Status` value, longest [`ProcStatus`] word (`"waiting-restart"`) | 15 |
+/// | `Uptime` value, `u64::MAX` milliseconds with no exact unit | 20 |
+/// | `CPU` value, `format!("{:.1}%", f32::MAX)` | 42 |
+/// | `Memory` value, `u64::MAX` bytes with no exact unit | 20 |
+/// | `Restarts`, `PID`, `Sheep ID` values, three `u32::MAX`s | 30 |
+/// | `Instance` value, `u32::MAX` | 10 |
+/// | `Dog Stale` value, `"yes"` | 3 |
+/// | `Lambs`, `Fold`, `Smit`, `Dog` values, four at [`FIELD_VALUE_LIMIT`] | 4096 |
+///
+/// `256 + 73 + 15 + 20 + 42 + 20 + 30 + 10 + 3 + 4096 = 4565`, under
+/// [`crate::limits::MESSAGE_CHARACTER_BUDGET`]'s 6,000 with 1,435 to
+/// spare. That margin is why [`FIELD_VALUE_LIMIT`] keeps Discord's own
+/// 1,024 ceiling rather than a lower one: only four of the thirteen
+/// fields need a cap at all, so there is room for every one of them at
+/// the full ceiling and still land well clear of the budget.
+/// `embed_worst_case_field_arithmetic_stays_under_budget` builds exactly
+/// this case and checks the built embed's own JSON, not this restated
+/// number.
 #[allow(
     dead_code,
     reason = "called by Task 12's /shep list; unreached from main until then"
@@ -242,10 +287,10 @@ pub fn process_embed(info: &ProcessInfo) -> CreateEmbed {
         embed = embed.field("Lambs", lambs_value(lambs), true);
     }
     if let Some(fold) = &info.fold {
-        embed = embed.field("Fold", fold.clone(), true);
+        embed = embed.field("Fold", limits::fit(fold, FIELD_VALUE_LIMIT), true);
     }
     if let Some(smit) = &info.smit {
-        embed = embed.field("Smit", smit.clone(), true);
+        embed = embed.field("Smit", limits::fit(smit, FIELD_VALUE_LIMIT), true);
     }
     if let Some(dog) = &info.dog {
         embed = embed.field("Dog", dog_value(dog), true);
@@ -402,5 +447,68 @@ mod tests {
         stale_false.dog_stale = Some(false);
         let rendered = format!("{:?}", process_embed(&stale_false));
         assert!(!rendered.contains("Dog Stale"));
+    }
+
+    /// The worst case [`process_embed`]'s own doc comment works out by
+    /// hand: every optional field present, the four built from an
+    /// unbounded `String` (Lambs, Fold, Smit, Dog) each long enough to hit
+    /// [`FIELD_VALUE_LIMIT`], and every numeric field at its type's widest
+    /// form. Reads the built embed's own JSON, the way Discord would see
+    /// it, and checks the sum against
+    /// [`crate::limits::MESSAGE_CHARACTER_BUDGET`] itself rather than a
+    /// number restated from it.
+    #[test]
+    fn embed_worst_case_field_arithmetic_stays_under_budget() {
+        let long_name = "a".repeat(EMBED_TITLE_LIMIT + 50);
+        let mut worst = info(u32::MAX, &long_name);
+        worst.status = ProcStatus::WaitingRestart;
+        worst.pid = Some(u32::MAX);
+        worst.restarts = u32::MAX;
+        worst.uptime_ms = u64::MAX;
+        worst.cpu_percent = Some(f32::MAX);
+        worst.memory_bytes = Some(u64::MAX);
+        worst.instance = Some(u32::MAX);
+        worst.lambs = Some(vec![Lamb::new(u32::MAX, "x".repeat(2_000))]);
+        worst.fold = Some("f".repeat(2_000));
+        worst.smit = Some("s".repeat(2_000));
+        worst.dog = Some(DogSource::Adopted {
+            path: "p".repeat(2_000),
+        });
+        worst.dog_stale = Some(true);
+
+        let embed = process_embed(&worst);
+        let json = serde_json::to_value(&embed).expect("json");
+        let title_len = json["title"].as_str().expect("title").chars().count();
+        let field_len: usize = json["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .map(|field| {
+                field["name"].as_str().expect("name").chars().count()
+                    + field["value"].as_str().expect("value").chars().count()
+            })
+            .sum();
+
+        for value_field in ["Lambs", "Fold", "Smit", "Dog"] {
+            let width = json["fields"]
+                .as_array()
+                .expect("fields")
+                .iter()
+                .find(|field| field["name"].as_str() == Some(value_field))
+                .and_then(|field| field["value"].as_str())
+                .expect("field present")
+                .chars()
+                .count();
+            assert!(
+                width <= FIELD_VALUE_LIMIT,
+                "{value_field} value is {width} chars, over FIELD_VALUE_LIMIT"
+            );
+        }
+
+        assert!(
+            title_len + field_len <= limits::MESSAGE_CHARACTER_BUDGET,
+            "{} over the message budget",
+            title_len + field_len
+        );
     }
 }
