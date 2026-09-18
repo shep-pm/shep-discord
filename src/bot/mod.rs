@@ -7,4 +7,5 @@
 //! gateway connection yet, and [`crate::stream`] is what already reaches
 //! Discord, over REST alone, for the log-streaming half of this dog.
 
+pub mod command;
 pub mod embed;
