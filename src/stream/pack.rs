@@ -88,10 +88,6 @@ fn title(name: &str, suffix: &str) -> String {
 /// here, by [`title`], rather than assumed to already fit: this is what
 /// makes [`into_messages`]'s own budget invariant true.
 #[must_use]
-#[allow(
-    dead_code,
-    reason = "called by the stream-driving task once a Group comes off Buffer::drain, not yet written"
-)]
 pub fn chunks(group: &Group) -> Vec<Chunk> {
     let characters: Vec<char> = group.text.chars().collect();
     let pieces: Vec<String> = characters
@@ -131,10 +127,6 @@ pub fn chunks(group: &Group) -> Vec<Chunk> {
 /// guard of its own for a chunk over budget, because [`chunks`] is the
 /// only place `Chunk` values are built and it never produces one.
 #[must_use]
-#[allow(
-    dead_code,
-    reason = "called by the stream-driving task before it hands messages to the Discord client, not yet written"
-)]
 pub fn into_messages(chunks: Vec<Chunk>) -> Vec<Vec<Chunk>> {
     let mut messages: Vec<Vec<Chunk>> = Vec::new();
     let mut current_total = 0usize;
@@ -167,10 +159,6 @@ pub fn into_messages(chunks: Vec<Chunk>) -> Vec<Vec<Chunk>> {
 /// something this narrow: this only strips CSI sequences (`ESC [`), which is
 /// what every common colorizer emits, not the full range of ANSI escapes.
 #[must_use]
-#[allow(
-    dead_code,
-    reason = "called wherever a raw bus line becomes a stream::buffer::Line, not yet written"
-)]
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();

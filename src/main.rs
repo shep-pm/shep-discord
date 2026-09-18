@@ -4,9 +4,11 @@
 //! bot side lands, answers shep's own verbs from slash commands. This file
 //! is the process around that: the probe shep spawns the binary to ask, the
 //! argument parser, the identity this dog announces itself with, and the
-//! run loop that holds the socket open. The Discord client and the log
-//! streaming this dog exists for are not here yet; they read the
-//! [`config::Config`] this loop already parses on every cycle.
+//! run loop that holds the socket open. That loop reads the
+//! [`config::Config`] it parses on every cycle and, once `log_channel` or
+//! `err_channel` names one, hands it to [`stream::run`] for as long as that
+//! subscription lasts; the slash-command side of the bot is still a later
+//! task, and nothing here opens a gateway connection for it.
 //!
 //! # The two questions shep asks the binary
 //!
@@ -57,6 +59,7 @@
 mod config;
 mod error;
 mod names;
+mod session;
 mod shepherd;
 mod stop;
 mod stream;
@@ -395,13 +398,21 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                 .await
                 .and_then(|toml| config::Config::from_toml(&toml))
             {
-                // Nothing calls `stream::run` with `_config` yet: that loop
-                // needs a real `stream::Sink`, and building one waits on a
-                // Discord client, which is a later task. Parsing the
-                // section here already proves the connection and the
-                // parser agree end to end, and a bad section is worth
-                // telling the operator about now rather than only once
-                // something depends on it.
+                // Streaming only when a channel names somewhere to send to:
+                // an operator who never set `log_channel` or `err_channel`
+                // gets no bus subscription spent on lines nothing reads.
+                // This await does not return until that subscription ends
+                // or `stop` resolves, so it stands in for this cycle's
+                // ordinary work for as long as it runs; when it returns,
+                // the loop's own wait and reconnect below try again.
+                Ok(config) if config.log_channel.is_some() || config.err_channel.is_some() => {
+                    let handshake = identity.handshake.as_deref();
+                    if let Err(err) =
+                        session::stream_once(live, handshake, &config, &mut stop).await
+                    {
+                        eprintln!("shep-discord: {err}");
+                    }
+                }
                 Ok(_config) => {}
                 Err(err) => eprintln!("shep-discord: {err}"),
             }

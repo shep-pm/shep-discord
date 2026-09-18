@@ -147,10 +147,6 @@ impl Live {
     ///
     /// # Errors
     /// As [`Self::section`].
-    #[allow(
-        dead_code,
-        reason = "reached once a Discord command or the log-streaming loop calls it, in a later task"
-    )]
     pub async fn flock(&self) -> Result<Vec<ProcessInfo>, Error> {
         match self.0.request(Request::ListFlock).await? {
             Response::Flock(sheep) => Ok(sheep),
@@ -170,7 +166,7 @@ impl Live {
     /// As [`Self::section`].
     #[allow(
         dead_code,
-        reason = "reached once a Discord command or the log-streaming loop calls it, in a later task"
+        reason = "reached once a Discord command calls it, in a later task"
     )]
     pub async fn describe(&self, name: &str) -> Result<Option<ProcessInfo>, Error> {
         let asked = Request::Describe {
@@ -272,10 +268,6 @@ impl Live {
     /// # Errors
     /// [`Error::Connect`] or [`Error::Request`] if the shepherd cannot be
     /// reached or refuses.
-    #[allow(
-        dead_code,
-        reason = "reached once the log-streaming loop subscribes to the bus, in a later task"
-    )]
     pub async fn subscribe(&self, topics: Vec<String>) -> Result<EventStream, Error> {
         Ok(self.0.subscribe(topics).await?)
     }

@@ -54,12 +54,6 @@ pub struct Group {
 /// A `VecDeque` rather than a `Vec`: [`Buffer::push`] pops the oldest line
 /// off the front when the buffer is over capacity, which is an O(1) pop
 /// only from the front of a deque.
-// Reached once the stream-driving task pushes lines from a bus subscription
-// and drains them on a timer; that wiring is a later task.
-#[allow(
-    dead_code,
-    reason = "constructed by the stream-driving task that pushes bus-derived Lines and drains them on a timer, not yet written"
-)]
 #[derive(Debug, Clone)]
 pub struct Buffer {
     lines: VecDeque<Line>,
@@ -70,10 +64,6 @@ pub struct Buffer {
 impl Buffer {
     /// An empty buffer holding at most `capacity` lines at once.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "called by the stream-driving task that owns one Buffer per subscription, not yet written"
-    )]
     pub fn new(capacity: usize) -> Self {
         Self {
             lines: VecDeque::new(),
@@ -91,10 +81,6 @@ impl Buffer {
     /// oldest line rather than refusing the newest keeps the buffer useful
     /// as a window onto the most recent output, which is what an operator
     /// watching a crash loop actually wants to see.
-    #[allow(
-        dead_code,
-        reason = "called by the stream-driving task on every bus frame, not yet written"
-    )]
     pub fn push(&mut self, line: Line) {
         if self.lines.len() >= self.capacity {
             // A zero capacity leaves nothing in `lines` to evict: `pop_front`
@@ -124,10 +110,6 @@ impl Buffer {
     /// rest queued, and a sheep logging faster than the flush interval
     /// grew that backlog forever. Draining everything on every call is
     /// what makes a flush interval simply a flush interval again.
-    #[allow(
-        dead_code,
-        reason = "called by the stream-driving task on its flush timer, not yet written"
-    )]
     pub fn drain(&mut self, coalesce_ms: u64) -> Vec<Group> {
         let mut groups = Vec::new();
         while let Some(first) = self.lines.pop_front() {
@@ -156,10 +138,6 @@ impl Buffer {
     /// Taken rather than read, so a caller that reports it (a periodic
     /// "N lines dropped" notice, say) reports each dropped line exactly
     /// once instead of repeating the same count on every later call.
-    #[allow(
-        dead_code,
-        reason = "called by the stream-driving task to report a dropped-line count alongside its flush, not yet written"
-    )]
     pub fn take_dropped(&mut self) -> u64 {
         core::mem::take(&mut self.dropped)
     }

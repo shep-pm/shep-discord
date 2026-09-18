@@ -20,13 +20,6 @@ use shep_client::shep_core::protocol::ProcessInfo;
 /// A `HashMap<u32, String>` rather than a `Vec<ProcessInfo>`: nothing here
 /// needs a sheep's status, pid, or any other field the muster roll carries,
 /// only the name a log line's id maps to.
-// Reached once `shepherd::Live` starts a bus subscription and hands its
-// frames to a caller that needs a name for an id: that wiring is a later
-// task, so nothing in a plain build constructs one yet.
-#[allow(
-    dead_code,
-    reason = "constructed by the stream-driving task that wires shepherd::Live's bus events to a name lookup, not yet written"
-)]
 #[derive(Debug, Clone, Default)]
 pub struct Names {
     by_id: HashMap<u32, String>,
@@ -35,10 +28,6 @@ pub struct Names {
 impl Names {
     /// An empty cache, before the first muster-roll refresh.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "called by the stream-driving task that starts a fresh Names per bus subscription, not yet written"
-    )]
     pub fn new() -> Self {
         Self::default()
     }
@@ -48,10 +37,6 @@ impl Names {
     /// Replaces rather than merges: a sheep deleted between two refreshes
     /// must leave the cache, or its name outlives it and a reused id later
     /// shows the wrong sheep's name.
-    #[allow(
-        dead_code,
-        reason = "called by the stream-driving task on every muster-roll poll, not yet written"
-    )]
     pub fn refresh(&mut self, roll: &[ProcessInfo]) {
         self.by_id = roll
             .iter()
@@ -66,10 +51,6 @@ impl Names {
     /// line worth showing, and a dropped line is a worse failure than an
     /// ungainly name.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "called wherever a stream::buffer::Line is built from a bus frame's bare id, not yet written"
-    )]
     pub fn get(&self, id: u32) -> String {
         self.by_id
             .get(&id)
@@ -85,10 +66,6 @@ impl Names {
     /// be two things to maintain for no measurable gain over one linear
     /// scan.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "called by the slash-command task that resolves a sheep argument's name to an id, not yet written"
-    )]
     pub fn id_of(&self, name: &str) -> Option<u32> {
         self.by_id
             .iter()

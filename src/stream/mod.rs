@@ -39,6 +39,7 @@
 //! not a substitute for the shepherd's own kill ladder.
 
 pub mod buffer;
+pub mod discord;
 pub mod pack;
 
 use core::fmt;
@@ -73,13 +74,6 @@ pub enum SinkError {
     /// [`pack`]'s module doc describes the old code falling into: it sent
     /// an oversized batch, took the refusal, and resent the same batch on
     /// every later tick because it only cleared its queue on success.
-    // Constructed today only by this module's own `tests::Recording` fake;
-    // a real `Sink` builds one from Discord's own 4xx response once a
-    // Discord client exists, in a later task.
-    #[allow(
-        dead_code,
-        reason = "constructed by a real Sink once a Discord client exists, in a later task"
-    )]
     BadRequest,
     /// Discord asked for a pause before the next attempt.
     #[allow(
@@ -110,8 +104,8 @@ impl core::error::Error for SinkError {}
 /// Narrow on purpose, the same reasoning shep-log-rotate's own `Daemon`
 /// trait gives for existing at all: with the network behind one method,
 /// [`State`] is testable against a recording fake with no client, no
-/// socket, and no running bot. There is one real implementation, built once
-/// a Discord client exists, and one fake in this module's own tests.
+/// socket, and no running bot. [`discord::DiscordSink`] is the one real
+/// implementation, and this module's own tests use a recording fake.
 ///
 /// `async fn` in a trait rather than a boxed future: this is used through a
 /// generic bound only, never behind `dyn`, so the auto-trait bound an
@@ -468,10 +462,6 @@ async fn send_with_retry<S: Sink>(sink: &S, channel: u64, message: Vec<Chunk>) {
 /// point is fatal: a failed flush drops its own batch per [`State::flush`],
 /// and a failed muster-roll read on a `process.*` event simply leaves the
 /// name cache as it was until the next one succeeds.
-#[allow(
-    dead_code,
-    reason = "called once main.rs builds a real Sink from a Discord client, in a later task"
-)]
 pub async fn run<S: Sink>(
     live: &Live,
     config: &Config,
