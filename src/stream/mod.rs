@@ -43,7 +43,6 @@ pub mod discord;
 pub mod pack;
 
 use core::fmt;
-use core::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use shep_client::{
@@ -65,34 +64,31 @@ use crate::{
 
 /// Why a [`Sink::send`] failed.
 ///
-/// Two variants only, because those are the two shapes [`run`]'s retry
-/// policy tells apart: see [`State::flush`] for what it does with each.
+/// One variant only, deliberately. A rate limit is not this crate's problem
+/// to solve: [`discord::DiscordSink`] sends through `serenity::http::Http`,
+/// and that client's own `Ratelimiter` already sleeps on a `retry-after`
+/// header and re-sends the request before `send` ever returns, on the
+/// default path where `ratelimiter_disabled` is left `false`
+/// (`http/client.rs:71`, `http/ratelimiting.rs:236` and `:377` in serenity
+/// 0.12.5's vendored source). A second sleep-and-retry here would be a rate
+/// limit handled twice, once inside the call this crate makes and once
+/// around it, so this type must never grow a variant for one again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinkError {
-    /// Discord refused the request on its own shape (a 400 and the like).
-    /// Retrying sends the identical rejection forever, which is the failure
-    /// [`pack`]'s module doc describes the old code falling into: it sent
-    /// an oversized batch, took the refusal, and resent the same batch on
-    /// every later tick because it only cleared its queue on success.
+    /// Discord refused the request, on its own shape (a 400 and the like)
+    /// or for any other reason [`discord::DiscordSink::send`] cannot tell
+    /// apart. Retrying a shape rejection sends the identical rejection
+    /// forever, which is the failure [`pack`]'s module doc describes the
+    /// old code falling into: it sent an oversized batch, took the
+    /// refusal, and resent the same batch on every later tick because it
+    /// only cleared its queue on success.
     BadRequest,
-    /// Discord asked for a pause before the next attempt.
-    #[allow(
-        dead_code,
-        reason = "constructed by a real Sink once a Discord client exists, in a later task"
-    )]
-    RateLimited {
-        /// How long to wait before retrying.
-        retry_after: Duration,
-    },
 }
 
 impl fmt::Display for SinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadRequest => write!(f, "discord refused the request"),
-            Self::RateLimited { retry_after } => {
-                write!(f, "discord asked for a {retry_after:?} pause")
-            }
         }
     }
 }
@@ -361,12 +357,9 @@ impl<'a, S: Sink> State<'a, S> {
     /// else this flush is about to send rather than waiting for the next
     /// one.
     ///
-    /// [`SinkError::BadRequest`] drops its batch: see [`SinkError`]'s own
-    /// doc for why retrying it is worse than losing it.
-    /// [`SinkError::RateLimited`] sleeps for the requested pause and
-    /// retries that one batch exactly once; a second failure, whichever
-    /// kind, drops it the same way a `BadRequest` does; a batch retried
-    /// forever is a batch that silences everything queued behind it.
+    /// A failed [`Sink::send`] drops its batch rather than retrying it: see
+    /// [`SinkError`]'s own doc for why retrying is worse than losing it, and
+    /// for why a rate limit never reaches this far in the first place.
     pub async fn flush(&mut self) {
         Self::flush_side(&mut self.out, self.coalesce_ms, self.sink).await;
         Self::flush_side(&mut self.err, self.coalesce_ms, self.sink).await;
@@ -385,7 +378,7 @@ impl<'a, S: Sink> State<'a, S> {
         for group in sided.buffer.drain(coalesce_ms) {
             let chunks = pack::chunks(&group);
             for message in pack::into_messages(chunks) {
-                send_with_retry(sink, sided.channel, message).await;
+                send_or_drop(sink, sided.channel, message).await;
             }
         }
     }
@@ -409,28 +402,17 @@ fn message_characters(message: &[Chunk]) -> usize {
         .sum()
 }
 
-/// Send `message` to `channel`, applying [`SinkError`]'s retry policy: see
-/// [`State::flush`] for what each variant means.
-async fn send_with_retry<S: Sink>(sink: &S, channel: u64, message: Vec<Chunk>) {
+/// Send `message` to `channel`, dropping it and printing why on failure.
+///
+/// No retry: see [`SinkError`]'s own doc for why a rate limit never reaches
+/// here, and [`State::flush`] for why a `BadRequest` is not retried either.
+async fn send_or_drop<S: Sink>(sink: &S, channel: u64, message: Vec<Chunk>) {
     let characters = message_characters(&message);
-    let retry = message.clone();
-    match sink.send(channel, message).await {
-        Ok(()) => {}
-        Err(SinkError::BadRequest) => {
-            eprintln!(
-                "shep-discord: discord refused a {characters} character message on channel \
-                 {channel}, dropping it"
-            );
-        }
-        Err(SinkError::RateLimited { retry_after }) => {
-            tokio::time::sleep(retry_after).await;
-            if let Err(err) = sink.send(channel, retry).await {
-                eprintln!(
-                    "shep-discord: retrying channel {channel} after a rate limit still failed: \
-                     {err}"
-                );
-            }
-        }
+    if let Err(err) = sink.send(channel, message).await {
+        eprintln!(
+            "shep-discord: channel {channel} refused a {characters} character message, \
+             dropping it: {err}"
+        );
     }
 }
 
@@ -696,21 +678,5 @@ mod tests {
             "{:?}",
             sent[0].description
         );
-    }
-
-    /// A rate-limited send is retried exactly once, whether the retry
-    /// succeeds or fails, never resent a third time.
-    #[tokio::test]
-    async fn a_rate_limited_send_is_retried_once_then_left_alone() {
-        let sink = Recording::rejecting(SinkError::RateLimited {
-            retry_after: Duration::from_millis(1),
-        });
-        let mut state = State::new(own_id(9), &sink);
-        state.on_event(BusEvent::LogOut {
-            id: 1,
-            line: "web line".into(),
-        });
-        state.flush().await;
-        assert_eq!(sink.attempts(), 2, "one send and exactly one retry");
     }
 }
