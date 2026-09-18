@@ -166,7 +166,7 @@ struct Sided {
 /// rather than present and discarded: an operator who never configured
 /// `err_channel` gets no buffer spent on it at all.
 pub struct State<'a, S: Sink> {
-    own_id: u32,
+    own_id: Option<u32>,
     names: Names,
     out: Option<Sided>,
     err: Option<Sided>,
@@ -182,7 +182,7 @@ impl<'a, S: Sink> State<'a, S> {
         dead_code,
         reason = "called only by this module's own tests; run builds a State through from_config"
     )]
-    pub fn new(own_id: u32, sink: &'a S) -> Self {
+    pub fn new(own_id: Option<u32>, sink: &'a S) -> Self {
         Self::with_channels(own_id, Some(0), Some(0), sink)
     }
 
@@ -196,7 +196,7 @@ impl<'a, S: Sink> State<'a, S> {
         reason = "called only by this module's own tests; run builds a State through from_config"
     )]
     pub fn with_channels(
-        own_id: u32,
+        own_id: Option<u32>,
         log_channel: Option<u64>,
         err_channel: Option<u64>,
         sink: &'a S,
@@ -216,7 +216,7 @@ impl<'a, S: Sink> State<'a, S> {
     /// `names` seeded from whatever the caller's muster-roll read already
     /// found.
     #[must_use]
-    pub fn from_config(own_id: u32, names: Names, config: &Config, sink: &'a S) -> Self {
+    pub fn from_config(own_id: Option<u32>, names: Names, config: &Config, sink: &'a S) -> Self {
         Self::from_parts(
             own_id,
             names,
@@ -229,7 +229,7 @@ impl<'a, S: Sink> State<'a, S> {
     }
 
     fn from_parts(
-        own_id: u32,
+        own_id: Option<u32>,
         names: Names,
         log_channel: Option<u64>,
         err_channel: Option<u64>,
@@ -303,8 +303,12 @@ impl<'a, S: Sink> State<'a, S> {
 
     /// Resolve `id` to a name and push it onto the side named by `side`,
     /// unless `id` is this dog's own or that side has no channel configured.
+    ///
+    /// `own_id` is `None` for a dog nobody adopted: shep captures none of
+    /// an unadopted process's output, so there is no id of its own that
+    /// could ever show up on the bus to filter.
     fn push(&mut self, side: Side, id: u32, line: String) {
-        if id == self.own_id {
+        if self.own_id == Some(id) {
             return;
         }
         let name = self.names.get(id);
@@ -419,13 +423,18 @@ async fn send_or_drop<S: Sink>(sink: &S, channel: u64, message: Vec<Chunk>) {
 /// Subscribe to this dog's four bus topics and drive [`State`] until `stop`
 /// resolves or the subscription itself ends.
 ///
-/// `own_id` is the numeric id the shepherd assigned this dog, resolved by
-/// the caller once through [`Names::id_of`] against the name it announced
-/// in its own handshake; see [`State::on_event`] for why a number and not
-/// that name is what a `LogOut`/`LogErr` is filtered against. `names` is
-/// the cache the caller's own first [`Live::flock`] already populated, so
-/// this loop's first flush renders under real names rather than every id's
-/// placeholder.
+/// `own_id` is `Some` with the numeric id the shepherd assigned this dog
+/// when the caller resolved one through [`Names::id_of`] against the name
+/// it announced in its own handshake, and `None` when nobody adopted this
+/// process, so there is no id of its own that could ever appear on the bus.
+/// See [`State::on_event`] for why a number and not that name is what a
+/// `LogOut`/`LogErr` is filtered against, and `crate::session::stream_once`
+/// for why a caller never reaches this function at all while an adopted
+/// dog's own id has not resolved yet: streaming unfiltered against a bus
+/// that does carry this dog's own lines is the bug this project exists to
+/// fix. `names` is the cache the caller's own first [`Live::flock`] already
+/// populated, so this loop's first flush renders under real names rather
+/// than every id's placeholder.
 ///
 /// Subscribes to `log.out` and `log.err` for the lines themselves, and to
 /// `process.start` and `process.delete` so the name cache tracks what the
@@ -447,7 +456,7 @@ async fn send_or_drop<S: Sink>(sink: &S, channel: u64, message: Vec<Chunk>) {
 pub async fn run<S: Sink>(
     live: &Live,
     config: &Config,
-    own_id: u32,
+    own_id: Option<u32>,
     names: Names,
     sink: &S,
     stop: &mut Stop,
@@ -497,8 +506,8 @@ mod tests {
 
     /// Names the id being constructed, so a test reads `own_id(9)` rather
     /// than a bare `9` that could be mistaken for somebody else's.
-    fn own_id(id: u32) -> u32 {
-        id
+    fn own_id(id: u32) -> Option<u32> {
+        Some(id)
     }
 
     /// A [`Sink`] that either records every chunk it is handed, tagged with
@@ -582,6 +591,24 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert!(sent[0].description.contains("web line"));
         assert!(!sent[0].description.contains("my own line"));
+    }
+
+    /// An unadopted dog has no id of its own on the bus at all: `own_id` is
+    /// `None`, so nothing gets filtered, not even an id as extreme as
+    /// `u32::MAX`. See `crate::session::resolve_own_id` for the case this
+    /// pairs with, an adopted dog whose id has not resolved yet.
+    #[tokio::test]
+    async fn an_unadopted_dog_streams_everything_unfiltered() {
+        let sink = Recording::new();
+        let mut state = State::new(None, &sink);
+        state.on_event(BusEvent::LogOut {
+            id: u32::MAX,
+            line: "web line".into(),
+        });
+        state.flush().await;
+        let sent = sink.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].description.contains("web line"));
     }
 
     /// The daemon's bus ring is 1,024 events and it says so when a
