@@ -56,6 +56,8 @@
 
 mod config;
 mod error;
+#[cfg(test)]
+mod test_support;
 
 use std::process::ExitCode;
 
@@ -96,6 +98,27 @@ Settings are read from `dogs.toml` over the shepherd's own socket, never
 from this process's arguments. The environment supplies two things and no
 more: $SHEP_HOME names the socket, and $SHEP_DOG_NAME names the dog. The
 shepherd sets both when it spawns this dog.";
+
+/// Printed for `--print-config`, until `config::PRINT_CONFIG` exists to
+/// print instead.
+///
+/// A `const` rather than an inline literal so the dash check can reach it
+/// without running `main`, which would call `probe` and read the real
+/// process environment.
+const PRINT_CONFIG_PLACEHOLDER: &str = "shep-discord: no [discord] settings to print yet.";
+
+/// The message printed when nothing adopted this process.
+///
+/// A function rather than an inline `eprintln!` for the same reason as
+/// [`PRINT_CONFIG_PLACEHOLDER`]: the dash check needs to reach the text
+/// without running `main`.
+fn unadopted_message(section: &str) -> String {
+    format!(
+        "shep-discord: $SHEP_DOG_NAME is not set, so nothing adopted this process. It will \
+         connect without naming itself, which the shepherd does not count as a handshake, \
+         and read [{section}] in dogs.toml once there is a socket to read it from."
+    )
+}
 
 /// What this process was asked to do.
 ///
@@ -247,7 +270,7 @@ fn main() -> ExitCode {
 
     if action == Action::PrintConfig {
         // `config::PRINT_CONFIG` is the parser's own commit, not this one.
-        println!("shep-discord: no [discord] settings to print yet.");
+        println!("{PRINT_CONFIG_PLACEHOLDER}");
         return ExitCode::SUCCESS;
     }
 
@@ -257,12 +280,7 @@ fn main() -> ExitCode {
         // stripped the environment between `shep adopt` and this process,
         // and the daemon is about to call this dog silent and stop
         // restarting it.
-        eprintln!(
-            "shep-discord: $SHEP_DOG_NAME is not set, so nothing adopted this process. It will \
-             connect without naming itself, which the shepherd does not count as a handshake, \
-             and read [{}] in dogs.toml once there is a socket to read it from.",
-            identity.section
-        );
+        eprintln!("{}", unadopted_message(&identity.section));
     }
 
     ExitCode::SUCCESS
@@ -271,6 +289,20 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_no_dashes;
+
+    /// No em dashes and no en dashes in anything this binary prints for a
+    /// person: a terminal that cannot render one prints a replacement
+    /// character in the middle of the one message that exists to be read by
+    /// somebody who is already confused.
+    #[test]
+    fn nothing_printed_for_a_person_carries_a_dash() {
+        assert_no_dashes(USAGE);
+        let usage = Action::parse(["--bogus"]).expect_err("refused").to_string();
+        assert_no_dashes(&usage);
+        assert_no_dashes(PRINT_CONFIG_PLACEHOLDER);
+        assert_no_dashes(&unadopted_message(DEFAULT_NAME));
+    }
 
     /// An environment holding exactly one variable, which is the only one
     /// [`Identity::from_env`] reads.
