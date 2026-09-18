@@ -102,14 +102,21 @@ impl fmt::Debug for Section {
 }
 
 /// The resolved settings, with every optional field decided.
-// `Config::from_toml` builds one of these, but nothing in `main` calls
-// `from_toml` yet: reading `dogs.toml` over the socket is a later task's
-// job. Only the tests in this file construct one for now.
-#[allow(
-    dead_code,
-    reason = "constructed by Config::from_toml, unreached from main until a later task wires it in"
-)]
+///
+/// `PartialEq` is derived, not hand-written, and it does compare `token`:
+/// it exists for the round-trip test below to compare a whole `Config`
+/// against another in one assertion, never to authenticate anything, so
+/// there is nothing here for a timing-safe comparison to protect.
+#[derive(PartialEq)]
 pub struct Config {
+    // Never read through this field either, for the same reason as
+    // `Section::token` above: the hand-written `Debug` below redacts it
+    // rather than reading it, so it stays dead by design until whichever
+    // later task uses it to log into Discord.
+    #[allow(
+        dead_code,
+        reason = "redacted rather than read by Config's own Debug; read once a later task logs in with it"
+    )]
     pub token: String,
     pub guild_id: u64,
     pub monitor_channel: Option<u64>,
@@ -347,30 +354,87 @@ mod tests {
         assert!(err.contains("buffer_line"), "{err}");
     }
 
+    // `Config::from_toml("token = \"t\"\nguild_id = 1\n")` against four
+    // hardcoded constants never reads `PRINT_CONFIG` at all, so it cannot
+    // fail for the reason it exists: a `PRINT_CONFIG` that drifted from the
+    // defaults would still pass. This round trip reparses the block itself.
     #[test]
-    fn the_defaults_are_what_the_printed_block_says() {
-        let config = Config::from_toml("token = \"t\"\nguild_id = 1\n").expect("parsed");
-        assert_eq!(config.flush.as_millis(), DEFAULT_FLUSH_MS);
-        assert_eq!(config.coalesce.as_millis(), DEFAULT_COALESCE_MS);
-        assert_eq!(config.buffer_lines, DEFAULT_BUFFER_LINES);
-        assert!(!config.ignore_dogs);
+    fn every_value_the_printed_block_documents_is_the_value_the_code_uses() {
+        // PRINT_CONFIG has three kinds of line: the `[discord]` header,
+        // prose comments (`# ` with a space), and commented settings
+        // (`#key = value`, no space). Uncomment only the settings.
+        let uncommented: Vec<&str> = PRINT_CONFIG
+            .lines()
+            .filter_map(|line| line.strip_prefix('#'))
+            .filter(|rest| !rest.starts_with(' '))
+            .collect();
+
+        // The guard needs its own guard: a filter that matched nothing
+        // would make the round trip below vacuous, parsing an empty string
+        // and passing for the wrong reason.
+        assert_eq!(
+            uncommented.len(),
+            10,
+            "expected one line per setting, got {uncommented:?}"
+        );
+
+        let config =
+            Config::from_toml(&uncommented.join("\n")).expect("the printed block is valid");
+
+        // `token` and `guild_id` have no real default, so the block
+        // documents a placeholder rather than one; everything else must be
+        // exactly what `Config::from_toml` already does on its own.
+        assert_eq!(
+            config,
+            Config {
+                token: "your-bot-token".to_owned(),
+                guild_id: 123_456_789_012_345_678,
+                monitor_channel: Some(123_456_789_012_345_678),
+                monitor_interval: Some("1m".parse().expect("a spelling shep accepts")),
+                log_channel: Some(123_456_789_012_345_678),
+                err_channel: Some(123_456_789_012_345_678),
+                flush: UpDuration::from_millis(DEFAULT_FLUSH_MS),
+                coalesce: UpDuration::from_millis(DEFAULT_COALESCE_MS),
+                buffer_lines: DEFAULT_BUFFER_LINES,
+                ignore_dogs: false,
+            }
+        );
     }
 
-    /// The schema and the printed block are the second and third places that
-    /// have to agree with `Section`'s fields about what a setting is. This is
-    /// the edge between them.
+    /// The schema's property names, sorted.
+    fn schema_keys() -> Vec<String> {
+        let schema = shep_client::dogs::config_schema::<Section>().expect("publishable");
+        let mut keys: Vec<String> = schema
+            .as_value()
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("an object schema has properties")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    // A one-way `contains` check, checking only that the schema's keys
+    // appear in `PRINT_CONFIG`, passes when `PRINT_CONFIG` also carries a
+    // stale or misspelled key alongside the real one: the real key is
+    // still there to match against, so a renamed field leaves a dangling
+    // line and the test never notices. Two-way set equality catches that
+    // side too.
     #[test]
     fn the_schema_and_the_printed_block_name_the_same_settings() {
-        let schema = shep_client::dogs::config_schema::<Section>().expect("schema");
-        let value = serde_json::to_value(&schema).expect("json");
-        let properties = value["properties"].as_object().expect("properties");
-        for key in properties.keys() {
-            assert!(
-                PRINT_CONFIG.contains(&format!("{key} ="))
-                    || PRINT_CONFIG.contains(&format!("# {key} =")),
-                "PRINT_CONFIG omits {key}"
-            );
-        }
+        let mut printed: Vec<String> = PRINT_CONFIG
+            .lines()
+            .filter_map(|line| line.strip_prefix('#'))
+            .filter(|rest| !rest.starts_with(' '))
+            .filter_map(|setting| setting.split_once(' '))
+            .map(|(key, _)| key.to_owned())
+            .collect();
+        printed.sort();
+
+        assert_eq!(printed.len(), 10, "one key per setting, got {printed:?}");
+        assert_eq!(schema_keys(), printed);
     }
 
     #[test]

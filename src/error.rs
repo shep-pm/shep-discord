@@ -4,27 +4,34 @@ use core::fmt;
 
 use shep_client::{ConnectError, RequestError};
 
-// `Config` is constructed by `config::Config::from_toml`, but nothing in
-// `main` calls `from_toml` yet, and `Connect`/`Request`/`Unexpected` wait on
-// the socket connection itself: both land once a later task reads
-// `dogs.toml` over the socket. Declared whole now because it is this
-// crate's own interface, and every later module that touches the shepherd
-// depends on it existing already rather than growing its own ad hoc error
-// type.
-#[allow(
-    dead_code,
-    reason = "every variant is constructed once main() reads dogs.toml over the socket, in a later task"
-)]
+// Declared whole now because it is this crate's own interface, and every
+// later module that touches the shepherd depends on it existing already
+// rather than growing its own ad hoc error type.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
     /// The first connection, or a reconnect the supervisor gave up on.
+    ///
+    /// Live already, through `impl From<ConnectError> for Error`, even
+    /// though nothing in `main` calls it yet: dead-code analysis counts a
+    /// variant constructed inside a trait impl as constructed, whether or
+    /// not the impl itself is ever invoked.
     Connect(ConnectError),
     /// A request the shepherd refused or could not answer.
+    ///
+    /// Live for the same reason as `Connect`, through
+    /// `impl From<RequestError> for Error`.
     Request(RequestError),
     /// The shepherd answered, with something else. Names both sides,
     /// because "unexpected response" alone sends the reader to the wrong
     /// end of the wire.
+    // Unlike `Connect`/`Request`, nothing constructs this yet, not even
+    // inside a dead function: the request/response pairing that would
+    // raise it lands with the socket connection itself, in a later task.
+    #[allow(
+        dead_code,
+        reason = "constructed once the socket connection lands in a later task"
+    )]
     Unexpected { asked: String, got: String },
     /// `dogs.toml`'s `[discord]` section did not parse, or a value in it
     /// is outside what this dog accepts.
