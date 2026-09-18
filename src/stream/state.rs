@@ -455,6 +455,12 @@ mod tests {
     /// The daemon's bus ring is 1,024 events and it says so when a
     /// subscriber falls behind. Neither source repo could report a gap,
     /// because PM2's bus had no such signal.
+    ///
+    /// An exact match against `dropped_notice(37)`, not two independent
+    /// substring checks: `dropped_notice` is deterministic, so two fragments
+    /// each passing proves nothing about the whole sentence. A notice that
+    /// said the opposite, e.g. "37 lines dropped: fixed now", would still
+    /// pass both `contains` checks a substring assertion would make here.
     #[tokio::test]
     async fn a_dropped_run_is_reported_rather_than_hidden() {
         let sink = Recording::new();
@@ -462,16 +468,7 @@ mod tests {
         state.on_event(BusEvent::Dropped { count: 37 });
         state.flush().await;
         let sent = sink.sent();
-        assert!(
-            sent[0].description.contains("37"),
-            "{:?}",
-            sent[0].description
-        );
-        assert!(
-            sent[0].description.contains("dropped"),
-            "{:?}",
-            sent[0].description
-        );
+        assert_eq!(sent[0].description, dropped_notice(37));
     }
 
     /// A batch Discord refuses on its shape will be refused identically
@@ -529,6 +526,9 @@ mod tests {
     /// The local subscription falling behind is a different condition from
     /// the daemon's own bus dropping events, but an operator reading the
     /// channel gets one notice either way.
+    ///
+    /// An exact match against `dropped_notice(5)`, the same reasoning as
+    /// `a_dropped_run_is_reported_rather_than_hidden`.
     #[tokio::test]
     async fn a_lagged_subscription_is_reported_the_same_way() {
         let sink = Recording::new();
@@ -536,16 +536,7 @@ mod tests {
         state.on_lagged(Lagged { count: 5 });
         state.flush().await;
         let sent = sink.sent();
-        assert!(
-            sent[0].description.contains('5'),
-            "{:?}",
-            sent[0].description
-        );
-        assert!(
-            sent[0].description.contains("dropped"),
-            "{:?}",
-            sent[0].description
-        );
+        assert_eq!(sent[0].description, dropped_notice(5));
     }
 
     /// New strings this task added, run through the same dash check every
