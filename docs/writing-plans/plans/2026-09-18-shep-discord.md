@@ -22,7 +22,7 @@ Every task's requirements implicitly include this section.
 - No em dash and no en dash in any string printed for a person. `test_support::assert_no_dashes` is the check.
 - A type holding a secret or a socket path gets a hand-written `Debug` that redacts it, pinned by an exact-string test.
 - `Request::Flush` may be constructed only in the `/shep flush` path. No other module may name it.
-- Keep every `.rs` file under 500 lines. `~/.claude/hooks/file-size-guard.js` asks at 500 and refuses at 1000.
+- Keep every `.rs` file under 500 lines of production code, counting up to its `#[cfg(test)]` module and not past it. Tests live in the file they exercise and are not counted, which is what shep-log-rotate does: its `tick.rs` is 1,833 lines total and its `naming.rs` 1,151, both mostly tests. `~/.claude/hooks/file-size-guard.js` measures the whole file, so it asks at 500 and refuses at 1000 on the total; answer it with the production number.
 - The four lint gates, all required: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features`, `cargo +1.88 check --all-targets --all-features --locked`.
 - Discord limits, from the spec: `description` 4,096 characters; `title` 256; the combined sum across `title`, `description`, `field.name`, `field.value`, `footer.text` and `author.name` over every embed on one message must not exceed 6,000; `custom_id` 1 to 100 characters; at most 5 buttons in an action row.
 - Doc comments explain the decision, not the syntax. Match shep-log-rotate's density, which is high on purpose.
