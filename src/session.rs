@@ -5,6 +5,8 @@
 //! testing against a fake) apart from the reconnect and config-reread logic
 //! around it.
 
+use shep_client::shep_core::protocol::ProcessInfo;
+
 use crate::{config::Config, error::Error, names::Names, shepherd::Live, stop::Stop, stream};
 
 /// What `handshake` and the current [`Names`] cache resolve to.
@@ -22,7 +24,7 @@ enum OwnId<'a> {
     /// filters that id's own lines out of the stream.
     Filtered(u32),
     /// `handshake` names a process this dog announced itself as, but
-    /// nothing in the current [`Names`] cache resolves it to an id yet,
+    /// nothing in the current muster roll is a dog under that name yet,
     /// whether because the last [`Live::flock`] failed outright or because
     /// it simply has not caught up to this dog's own registration. Either
     /// way shep spawned this process and its output is already on the bus,
@@ -32,12 +34,23 @@ enum OwnId<'a> {
     Unresolved(&'a str),
 }
 
-/// Resolve `handshake` against `names`.
-fn resolve_own_id<'a>(handshake: Option<&'a str>, names: &Names) -> OwnId<'a> {
+/// Resolve `handshake` against `roll`, the current muster roll.
+///
+/// Matches on the name AND the row being a dog, never the name alone.
+/// `ProcessInfo::dog` is `Some` for a dog's own row and `None` for every
+/// sheep's, so an operator who names a sheep the same as this dog cannot
+/// make this resolve to the sheep's id: matching the name by itself would,
+/// and a dog that filtered a sheep's id out of the stream while publishing
+/// its own lines unfiltered is the founding bug of this project, reached a
+/// third way.
+fn resolve_own_id<'a>(handshake: Option<&'a str>, roll: &[ProcessInfo]) -> OwnId<'a> {
     match handshake {
         None => OwnId::Unadopted,
-        Some(name) => match names.id_of(name) {
-            Some(id) => OwnId::Filtered(id),
+        Some(name) => match roll
+            .iter()
+            .find(|info| info.name == name && info.dog.is_some())
+        {
+            Some(info) => OwnId::Filtered(info.id),
             None => OwnId::Unresolved(name),
         },
     }
@@ -109,11 +122,10 @@ pub async fn stream_once(
     unresolved_warned: &mut bool,
     stop: &mut Stop,
 ) -> Result<(), Error> {
+    let roll = live.flock().await.unwrap_or_default();
     let mut names = Names::new();
-    if let Ok(roll) = live.flock().await {
-        names.refresh(&roll);
-    }
-    let own_id = match resolve_own_id(handshake, &names) {
+    names.refresh(&roll);
+    let own_id = match resolve_own_id(handshake, &roll) {
         OwnId::Unadopted => None,
         OwnId::Filtered(id) => {
             warn_once(true, unresolved_warned);
@@ -132,43 +144,74 @@ pub async fn stream_once(
 
 #[cfg(test)]
 mod tests {
-    use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
+    use shep_client::shep_core::{protocol::DogSource, status::ProcStatus};
 
     use super::*;
 
-    fn info(id: u32, name: &str) -> ProcessInfo {
+    /// A sheep's row: no `dog` set, the same as a peer daemon reports for
+    /// every entry that is not a dog.
+    fn sheep(id: u32, name: &str) -> ProcessInfo {
         ProcessInfo::builder(id, name, ProcStatus::Online).build()
+    }
+
+    /// A dog's own row, under whatever name it announced.
+    fn dog(id: u32, name: &str) -> ProcessInfo {
+        ProcessInfo::builder(id, name, ProcStatus::Online)
+            .dog(Some(DogSource::BuiltIn))
+            .build()
     }
 
     /// No handshake means nobody adopted this process, so there is no id to
     /// filter and none is needed.
     #[test]
     fn no_handshake_needs_no_filter() {
-        let names = Names::new();
-        assert_eq!(resolve_own_id(None, &names), OwnId::Unadopted);
+        assert_eq!(resolve_own_id(None, &[]), OwnId::Unadopted);
     }
 
-    /// A handshake the current roll can name resolves to that row's id.
+    /// A handshake the current roll names a dog row for resolves to that
+    /// row's id.
     #[test]
     fn a_handshake_the_roll_knows_resolves() {
-        let mut names = Names::new();
-        names.refresh(&[info(9, "shep-discord")]);
         assert_eq!(
-            resolve_own_id(Some("shep-discord"), &names),
+            resolve_own_id(Some("shep-discord"), &[dog(9, "shep-discord")]),
             OwnId::Filtered(9)
         );
     }
 
     /// A handshake naming a process the current roll has no row for yet
-    /// (an empty cache, standing in for both a failed flock and one that
-    /// has not caught up) must not resolve as if nothing needed filtering:
-    /// this dog IS supervised, and its lines are on the bus regardless of
-    /// whether this cache has caught up to that fact.
+    /// (an empty roll, standing in for both a failed flock and one that has
+    /// not caught up) must not resolve as if nothing needed filtering: this
+    /// dog IS supervised, and its lines are on the bus regardless of whether
+    /// this roll has caught up to that fact.
     #[test]
     fn a_handshake_the_roll_cannot_yet_name_stays_unresolved() {
-        let names = Names::new();
         assert_eq!(
-            resolve_own_id(Some("shep-discord"), &names),
+            resolve_own_id(Some("shep-discord"), &[]),
+            OwnId::Unresolved("shep-discord")
+        );
+    }
+
+    /// An operator who names a sheep the same as this dog must not make
+    /// this resolve to the sheep's id: matching the name alone would filter
+    /// the sheep's lines out of the stream while leaving this dog's own
+    /// unfiltered, the founding bug of this project reached a third way.
+    #[test]
+    fn a_dog_sharing_a_name_with_a_sheep_resolves_to_the_dog() {
+        assert_eq!(
+            resolve_own_id(
+                Some("shep-discord"),
+                &[dog(9, "shep-discord"), sheep(1, "shep-discord")]
+            ),
+            OwnId::Filtered(9)
+        );
+    }
+
+    /// A sheep alone under this dog's handshake name must stay unresolved,
+    /// never resolve to the sheep's own id.
+    #[test]
+    fn a_sheep_alone_under_the_name_stays_unresolved() {
+        assert_eq!(
+            resolve_own_id(Some("shep-discord"), &[sheep(1, "shep-discord")]),
             OwnId::Unresolved("shep-discord")
         );
     }

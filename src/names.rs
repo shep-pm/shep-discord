@@ -57,21 +57,6 @@ impl Names {
             .cloned()
             .unwrap_or_else(|| format!("sheep {id}"))
     }
-
-    /// The id last seen under `name`, or `None` if no refresh has carried
-    /// it.
-    ///
-    /// Walks the map rather than keeping a reverse index: the flock is
-    /// small enough that a second map kept in step for every refresh would
-    /// be two things to maintain for no measurable gain over one linear
-    /// scan.
-    #[must_use]
-    pub fn id_of(&self, name: &str) -> Option<u32> {
-        self.by_id
-            .iter()
-            .find(|(_, candidate)| candidate.as_str() == name)
-            .map(|(&id, _)| id)
-    }
 }
 
 #[cfg(test)]
@@ -103,13 +88,5 @@ mod tests {
         names.refresh(&[info(1, "web")]);
         assert_eq!(names.get(1), "web");
         assert_eq!(names.get(2), "sheep 2");
-    }
-
-    #[test]
-    fn a_name_resolves_back_to_its_id() {
-        let mut names = Names::new();
-        names.refresh(&[info(3, "worker")]);
-        assert_eq!(names.id_of("worker"), Some(3));
-        assert_eq!(names.id_of("ghost"), None);
     }
 }
