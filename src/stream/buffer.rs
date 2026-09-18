@@ -97,8 +97,14 @@ impl Buffer {
     )]
     pub fn push(&mut self, line: Line) {
         if self.lines.len() >= self.capacity {
-            self.lines.pop_front();
-            self.dropped += 1;
+            // A zero capacity leaves nothing in `lines` to evict: `pop_front`
+            // on an empty deque returns `None`, and only a `Some` is an
+            // actual drop. Counting unconditionally here counted an eviction
+            // that never happened, so `take_dropped` over-reported for the
+            // life of the process whenever a buffer's capacity was zero.
+            if self.lines.pop_front().is_some() {
+                self.dropped += 1;
+            }
         }
         self.lines.push_back(line);
     }
@@ -233,5 +239,20 @@ mod tests {
         assert_eq!(buffer.take_dropped(), 2);
         assert_eq!(buffer.take_dropped(), 0, "taking the count clears it");
         assert_eq!(buffer.drain(1_000).len(), 3);
+    }
+
+    /// The first push into a zero capacity buffer has nothing queued yet to
+    /// evict, so `pop_front` returns `None` rather than a line it actually
+    /// dropped. Before the fix, `dropped` went up on this call regardless,
+    /// counting an eviction that never happened.
+    #[test]
+    fn the_first_push_into_a_zero_capacity_buffer_reports_no_drop() {
+        let mut buffer = Buffer::new(0);
+        buffer.push(line(0, "web", "line"));
+        assert_eq!(
+            buffer.take_dropped(),
+            0,
+            "the deque was empty, so pop_front had nothing to evict"
+        );
     }
 }
