@@ -16,14 +16,14 @@
 |---|---|---|
 | Scope | Gateway bot + log streaming. No event alerting. | `bark` already ships `Sink::Discord` with a rule engine and debounce. Duplicating it means two rule engines that drift. |
 | Where log *alerting* goes | `bark`, upstream | Rule-shaped, debounce-shaped, and serves the Slack and Json sinks too. Filed as [shep-pm/shep#341](https://github.com/shep-pm/shep/issues/341). |
-| Where log *streaming* goes | Here | Firehose-shaped. Needs batching, coalescing and 4,095-char chunking that bark's one-POST-per-firing path has no room for. |
+| Where log *streaming* goes | Here | Firehose-shaped. Needs batching, coalescing and chunking that bark's one-POST-per-firing path has no room for. |
 | Discord library | `serenity` | Closest shape to discord.js, so the port reads close to 1:1. Heavy tree, accepted: the gateway is heartbeats, resume, session state, sharding and rate limits, and hand-rolling it the way bark hand-rolls its one-shot POST would be weeks and a bug source. |
 | The 6 embed fields with no source | Dropped, replaced with shep's own | `ProcessInfo` has no `version`, `namespace`, `exec_mode`, `max_memory_restart`, `autorestart` or `interpreter`. It has `lambs`, `instance`, `smit`, `fold`, `dog`, `handshook`, `dog_stale`. The embed becomes shep-native rather than a PM2 embed with holes. |
 | Secrets | `dogs.toml` with `#[shep(secret)]` | What `docs/dogs.md` argues for and what bark does. Config rides the socket, never the environment. |
 
 ## Constraints
 
-**Breaking changes: not applicable.** New crate, no users. Neither source repo is being kept alive: `pm2-discord-logger` last shipped 2024-03-31, `discord-pm2` is `"private": true` and was never published.
+**Breaking changes: not applicable.** New crate, no users. Both source repos are published and working; nothing here deprecates them. They target PM2, and this targets shep.
 
 **Migration: none.** Nobody converts a PM2 module into a shep dog in place. An operator adopts the binary with `shep adopt` and writes a fresh `[discord]` section.
 

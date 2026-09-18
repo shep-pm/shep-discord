@@ -4,6 +4,8 @@
 
 Module shape follows `shep-log-rotate`: one module owns the daemon conversation, one owns stopping, the rest are pure. The two source repos are `pm2-discord-logger` (`pdl/`) and `discord-pm2` (`dp2/`) below.
 
+> Superseded in places by [the design spec](../../brainstorming/specs/2026-09-18-shep-discord-design.md), which is the authority. Research done after this file was written renamed some config keys and corrected the Discord embed limits. This map is kept as the record of where each old symbol went.
+
 ## New structure
 
 ```
@@ -102,10 +104,12 @@ src/
     chunk / Embed building
       ← was pdl/src/Discord.ts:40 (createMessage)
       Action: port + redesign
-      Notes: 4,095-char chunking and the "(i/n)" suffix carry over verbatim.
-             Adds the cap pdl never had: Discord refuses more than 10 embeds
-             per message, which is why Discord.ts:67 retries the same failed
-             batch forever. Strips ANSI on the way in, as pdl did.
+      Notes: chunking and the "(i/n)" suffix carry over. The limits were
+             wrong here and the spec corrects them: a description caps at
+             4,096, and the binding constraint is the 6,000-character sum
+             across every embed on one message, not an embed count. Two full
+             chunks is 8,192 and a 400, which is what Discord.ts:67 retries
+             forever. Strips ANSI on the way in, as pdl did.
 
   bot/mod.rs
     Bot / State

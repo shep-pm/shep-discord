@@ -4,7 +4,7 @@ Status: approved 2026-09-18. Supersedes nothing.
 
 A Discord dog for shep. One binary holding a serenity gateway connection and a shep bus subscription, so an operator can drive the flock from Discord and watch its log output in a channel.
 
-Ports and combines two abandoned TypeScript programs: [`pm2-discord-logger`](https://github.com/TurtIeSocks/pm2-discord-logger) (292 LOC, last shipped 2024-03-31) and [`discord-pm2`](https://github.com/TurtIeSocks/discord-pm2) (1,146 LOC, never published). The trace, assessment and old-to-new map that this spec is built on live in `docs/systematic-refactor/refactor-workspace/`.
+Ports and combines two published TypeScript programs: [`pm2-discord-logger`](https://github.com/TurtIeSocks/pm2-discord-logger) (292 LOC) and [`discord-pm2`](https://github.com/TurtIeSocks/discord-pm2) (1,146 LOC). Both work against PM2 and neither has anything wrong with it; shep replaces their host, so they need a host again. The trace, assessment and old-to-new map that this spec is built on live in `docs/systematic-refactor/refactor-workspace/`.
 
 ## Scope, and what bark keeps
 
