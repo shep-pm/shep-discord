@@ -1444,6 +1444,8 @@ Expected: PASS, two tests.
 
 Sections: what the dog does, what it deliberately leaves to `bark` (with the table from the spec), install and `shep adopt`, the `[discord]` section with every key, the three commands, and a note that `monitor_interval` is what survives a restart.
 
+The `/system` section carries one more line, from the spec at `docs/brainstorming/specs/2026-09-18-shep-discord-design.md:189`: `/system` is built on `Request::HostUsage`, which arrived with protocol 9, so a shepherd older than that refuses the verb by name and `/system` answers with an error rather than an embed. Nothing else in the dog is affected, because a shepherd accepts any peer at or above its own `MIN_SUPPORTED` and that number is still 8. Say the version, not just "an older shepherd".
+
 The README is published prose. Run `humanizer` and then `rin-voice` on it before committing. No em dashes.
 
 - [ ] **Step 5: Write `CLAUDE.md`**
