@@ -13,16 +13,10 @@
 //! The run loop owns the signal. It turns ctrl-c into a request here, and
 //! watches the same request while it waits on the socket between requests.
 //!
-//! Nothing outside this module's own tests calls any of it yet: the run
-//! loop that does is the module built alongside it in the same task, not
-//! this one. Until then a plain (non-test) build reaches none of this, so
-//! the whole module carries one allow rather than the four scattered ones a
-//! per-item copy would need, removed the moment `main` calls
-//! [`Stop::on_ctrl_c`].
-#![allow(
-    dead_code,
-    reason = "wired into main's run loop in the module built alongside this one"
-)]
+//! `main`'s run loop calls [`Stop::on_ctrl_c`] and [`Stop::wait`], so a
+//! plain (non-test) build reaches everything here except [`Stop::requested`],
+//! which only this module's own tests call directly; the run loop learns a
+//! stop happened by `wait` resolving, not by polling it.
 
 use tokio::sync::watch;
 
@@ -69,6 +63,10 @@ impl Stop {
     }
 
     /// Whether a stop has been requested.
+    #[allow(
+        dead_code,
+        reason = "the run loop learns a stop happened from wait resolving, not by polling this; only this module's own tests call it directly"
+    )]
     pub fn requested(&self) -> bool {
         *self.0.borrow()
     }
