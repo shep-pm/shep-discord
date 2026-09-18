@@ -4,14 +4,16 @@ use core::fmt;
 
 use shep_client::{ConnectError, RequestError};
 
-// Nothing builds or matches an `Error` yet: the socket connection that
-// raises `Connect`/`Request`, and the parser that raises `Config`, both
-// land in later commits. Declared now because it is this task's own
-// interface, and every later module that touches the shepherd depends on
-// it existing already rather than growing its own ad hoc error type.
+// `Config` is constructed by `config::Config::from_toml`, but nothing in
+// `main` calls `from_toml` yet, and `Connect`/`Request`/`Unexpected` wait on
+// the socket connection itself: both land once a later task reads
+// `dogs.toml` over the socket. Declared whole now because it is this
+// crate's own interface, and every later module that touches the shepherd
+// depends on it existing already rather than growing its own ad hoc error
+// type.
 #[allow(
     dead_code,
-    reason = "constructed once the socket connection and the config parser land"
+    reason = "every variant is constructed once main() reads dogs.toml over the socket, in a later task"
 )]
 #[derive(Debug)]
 #[non_exhaustive]

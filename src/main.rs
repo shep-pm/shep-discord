@@ -99,19 +99,11 @@ from this process's arguments. The environment supplies two things and no
 more: $SHEP_HOME names the socket, and $SHEP_DOG_NAME names the dog. The
 shepherd sets both when it spawns this dog.";
 
-/// Printed for `--print-config`, until `config::PRINT_CONFIG` exists to
-/// print instead.
-///
-/// A `const` rather than an inline literal so the dash check can reach it
-/// without running `main`, which would call `probe` and read the real
-/// process environment.
-const PRINT_CONFIG_PLACEHOLDER: &str = "shep-discord: no [discord] settings to print yet.";
-
 /// The message printed when nothing adopted this process.
 ///
-/// A function rather than an inline `eprintln!` for the same reason as
-/// [`PRINT_CONFIG_PLACEHOLDER`]: the dash check needs to reach the text
-/// without running `main`.
+/// A function rather than an inline `eprintln!` so the dash check can reach
+/// the text without running `main`, which would call `probe` and read the
+/// real process environment.
 fn unadopted_message(section: &str) -> String {
     format!(
         "shep-discord: $SHEP_DOG_NAME is not set, so nothing adopted this process. It will \
@@ -269,8 +261,7 @@ fn main() -> ExitCode {
     let identity = Identity::from_env(|key| std::env::var(key).ok());
 
     if action == Action::PrintConfig {
-        // `config::PRINT_CONFIG` is the parser's own commit, not this one.
-        println!("{PRINT_CONFIG_PLACEHOLDER}");
+        println!("{}", config::PRINT_CONFIG);
         return ExitCode::SUCCESS;
     }
 
@@ -300,7 +291,7 @@ mod tests {
         assert_no_dashes(USAGE);
         let usage = Action::parse(["--bogus"]).expect_err("refused").to_string();
         assert_no_dashes(&usage);
-        assert_no_dashes(PRINT_CONFIG_PLACEHOLDER);
+        assert_no_dashes(config::PRINT_CONFIG);
         assert_no_dashes(&unadopted_message(DEFAULT_NAME));
     }
 
