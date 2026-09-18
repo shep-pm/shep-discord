@@ -204,6 +204,11 @@ impl Config {
             .transpose()?
             .map(|interval| interval.max(floor));
 
+        let buffer_lines = section.buffer_lines.unwrap_or(DEFAULT_BUFFER_LINES);
+        if buffer_lines == 0 {
+            return Err(Error::Config("buffer_lines must be at least 1".to_owned()));
+        }
+
         Ok(Self {
             token,
             guild_id,
@@ -213,7 +218,7 @@ impl Config {
             err_channel: section.err_channel,
             flush,
             coalesce,
-            buffer_lines: section.buffer_lines.unwrap_or(DEFAULT_BUFFER_LINES),
+            buffer_lines,
             ignore_dogs: section.ignore_dogs.unwrap_or(false),
         })
     }
@@ -309,6 +314,19 @@ mod tests {
             MIN_MONITOR_INTERVAL_MS,
             "a monitor refreshing every second spends the channel's whole rate budget"
         );
+    }
+
+    #[test]
+    fn a_zero_buffer_lines_is_refused_rather_than_clamped() {
+        // A buffer with capacity 0 cannot hold the line it was just handed,
+        // so an operator who typed 0 wanted something other than what this
+        // dog would do with it. Refusing rather than clamping is this
+        // project's stance on every out-of-range config value: an operator
+        // who wrote it should be told, not silently corrected.
+        let err = Config::from_toml("token = \"t\"\nguild_id = 1\nbuffer_lines = 0\n")
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("buffer_lines"), "{err}");
     }
 
     #[test]
