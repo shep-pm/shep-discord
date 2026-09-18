@@ -32,6 +32,21 @@ pub enum Error {
     /// `dogs.toml`'s `[discord]` section did not parse, or a value in it
     /// is outside what this dog accepts.
     Config(String),
+    /// Discord itself refused or could not answer a request a command
+    /// made once the gateway came up: a broken token, a permission the
+    /// guild never granted the bot, or the request otherwise failing.
+    ///
+    /// Nothing needed this before a `Command` existed with a reason to
+    /// call Discord back: `Connect` and `Request` above are the shepherd
+    /// side of this dog, and this is the same wrapping for the other
+    /// side, through `impl From<serenity::Error> for Error`.
+    ///
+    /// Boxed rather than inline: `serenity::Error` is over 100 bytes on
+    /// its own, and an unboxed variant that size would make every `Result<
+    /// _, Error>` in this crate pay for the biggest variant on every
+    /// return, `Ok` included, whether or not it ever carries a Discord
+    /// error.
+    Discord(Box<serenity::Error>),
 }
 
 impl fmt::Display for Error {
@@ -43,6 +58,7 @@ impl fmt::Display for Error {
                 write!(f, "asked the shepherd for {asked} and got {got}")
             }
             Self::Config(message) => write!(f, "[discord] in dogs.toml: {message}"),
+            Self::Discord(err) => write!(f, "Discord refused a request: {err}"),
         }
     }
 }
@@ -52,6 +68,7 @@ impl core::error::Error for Error {
         match self {
             Self::Connect(err) => Some(err),
             Self::Request(err) => Some(err),
+            Self::Discord(err) => Some(err),
             Self::Unexpected { .. } | Self::Config(_) => None,
         }
     }
@@ -66,5 +83,11 @@ impl From<ConnectError> for Error {
 impl From<RequestError> for Error {
     fn from(err: RequestError) -> Self {
         Self::Request(err)
+    }
+}
+
+impl From<serenity::Error> for Error {
+    fn from(err: serenity::Error) -> Self {
+        Self::Discord(Box::new(err))
     }
 }
