@@ -56,6 +56,7 @@
 
 mod config;
 mod error;
+mod names;
 mod shepherd;
 mod stop;
 #[cfg(test)]
