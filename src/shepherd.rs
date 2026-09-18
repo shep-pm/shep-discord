@@ -611,7 +611,9 @@ mod tests {
         let usage = live.host_usage().await.expect("ok").expect("sampled");
         assert_eq!(usage.cpu_percent, Some(12.5));
         assert_eq!(usage.memory_used_bytes, 1024);
+        assert_eq!(usage.memory_total_bytes, 4096);
         assert_eq!(usage.disk_bytes_per_second, Some((1, 2)));
+        assert_eq!(usage.network_bytes_per_second, None);
     }
 
     /// A host the shepherd cannot sample answers `None` rather than an
