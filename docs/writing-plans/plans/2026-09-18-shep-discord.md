@@ -400,6 +400,8 @@ git commit -m "feat: scaffold the crate and answer shep's adopt probes"
 **Files:**
 - Modify: `src/config.rs`
 
+`buffer_lines` is refused at zero rather than clamped, which is the posture `map.md` set when it dropped `pm2-discord-logger`'s silent `buffer_seconds` clamp: an out-of-range value is a typo worth telling the operator about, not one to correct behind their back. Zero is not a smaller buffer, it is a buffer that cannot hold the line it was just handed, so `Buffer::push` would evict nothing, count a drop that did not happen, and keep the line anyway.
+
 **Interfaces:**
 - Consumes: `config::Section`, `config::Config`, `error::Error` from Task 1.
 - Produces: `Config::from_toml(&str) -> Result<Config, Error>`, `config::PRINT_CONFIG: &str`.
@@ -792,12 +794,14 @@ git add src/stream/ && git commit -m "feat: buffer log lines with a bounded queu
 
 This is where the old code was wrong in the way that mattered.
 
+A title is a sheep's name, and shep does not cap a sheep name's length: there is no name-length rule anywhere in shep-core's config validation, which is the same reason Discord `custom_id`s key on the numeric id rather than the name. So a long name is what makes the 6,000 budget reachable, not a long log line. Cap the title at `EMBED_TITLE_LIMIT` inside `chunks`, truncating the name and ending it with `'\u{2026}'`, which is how shep's own lookout fits a name to a column (`crates/shep-cli/src/lookout/view/flock/layout.rs`, `a_name_too_long_for_its_column_ends_in_an_ellipsis`). Keep the `" (i/n)"` suffix whole and truncate only the name: the suffix is what tells an operator a message was split. With the cap in place `256 + 4096 = 4352 < 6000`, so no single chunk can exceed the budget and `into_messages` needs no guard for it.
+
 **Files:**
 - Create: `src/stream/pack.rs`
 
 **Interfaces:**
 - Consumes: `buffer::Group`.
-- Produces: `pack::EMBED_DESCRIPTION_LIMIT: usize = 4096`, `pack::MESSAGE_CHARACTER_BUDGET: usize = 6000`, `pack::Chunk { title: String, description: String }`, `pack::chunks(&Group) -> Vec<Chunk>`, `pack::into_messages(Vec<Chunk>) -> Vec<Vec<Chunk>>`, `pack::strip_ansi(&str) -> String`.
+- Produces: `pack::EMBED_DESCRIPTION_LIMIT: usize = 4096`, `pack::EMBED_TITLE_LIMIT: usize = 256`, `pack::MESSAGE_CHARACTER_BUDGET: usize = 6000`, `pack::Chunk { title: String, description: String }`, `pack::chunks(&Group) -> Vec<Chunk>`, `pack::into_messages(Vec<Chunk>) -> Vec<Vec<Chunk>>`, `pack::strip_ansi(&str) -> String`.
 
 - [ ] **Step 1: Write the failing tests**
 
