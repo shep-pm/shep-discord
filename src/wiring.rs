@@ -49,7 +49,7 @@ pub struct Wiring {
     /// The monitor and that same board, in the shape
     /// [`crate::stream::run`] hands a `process.*` event to. `Some`
     /// exactly when `board` is.
-    pub wired: Option<Arc<watch::Wired>>,
+    pub wired: Option<Arc<watch::Wired<channel::Live>>>,
 }
 
 impl Wiring {

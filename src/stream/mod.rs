@@ -62,7 +62,7 @@ use shep_client::{
 };
 
 use crate::{
-    bot::monitor::watch,
+    bot::{channel, monitor::watch},
     config::Config,
     error::Error,
     names::Names,
@@ -224,7 +224,7 @@ pub async fn run<S: Sink>(
     own_id: Option<u32>,
     names: Names,
     sink: &S,
-    monitor: Option<&Arc<watch::Wired>>,
+    monitor: Option<&Arc<watch::Wired<channel::Live>>>,
     stop: &mut Stop,
 ) -> Result<(), Error> {
     let mut state = State::from_config(own_id, names, config, sink);

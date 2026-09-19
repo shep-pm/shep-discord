@@ -10,7 +10,7 @@ use shep_client::shep_core::protocol::ProcessInfo;
 use std::sync::Arc;
 
 use crate::{
-    bot::monitor,
+    bot::{channel, monitor},
     config::Config,
     error::Error,
     names::Names,
@@ -142,7 +142,7 @@ pub async fn stream_once<S: Sink>(
     handshake: Option<&str>,
     config: &Config,
     sink: &S,
-    wired: Option<&Arc<monitor::watch::Wired>>,
+    wired: Option<&Arc<monitor::watch::Wired<channel::Live>>>,
     unresolved_warned: &mut bool,
     stop: &mut Stop,
 ) -> Result<(), Error> {
