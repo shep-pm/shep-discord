@@ -164,7 +164,7 @@ impl MonitorCommand {
             return no_channel_message().to_owned();
         };
         let interval = interval_for(state.config.monitor_interval);
-        let board = Refresh::new(&state.config, channel, interval, &state.live, &state.names);
+        let board = Refresh::new(&state.config, channel, interval, &state.live);
         if refresh::start(&state.monitor, board) {
             started_reply(&interval.to_string())
         } else {
@@ -200,7 +200,6 @@ impl MonitorCommand {
             &state.monitor,
             &board,
             &state.live,
-            &state.names,
             state.config.ignore_dogs,
         )
         .await?;

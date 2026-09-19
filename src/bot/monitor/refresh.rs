@@ -12,7 +12,7 @@
 //! two readers in two files.
 
 use core::time::Duration;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use shep_client::shep_core::values::UpDuration;
 
@@ -27,23 +27,20 @@ use crate::{
     },
     config::Config,
     error::Error,
-    names::Names,
     shepherd::Live,
     stop::Stop,
 };
 
 /// Everything the refresh task needs to draw the flock.
 ///
-/// A struct rather than five parameters: [`start`] would otherwise take a
-/// board, a session, a name cache, a flag and a duration positionally, and
-/// two of those are easy to swap by mistake.
+/// A struct rather than four parameters: [`start`] would otherwise take a
+/// board, a session, a flag and a duration positionally, and two of those
+/// are easy to swap by mistake.
 pub struct Refresh {
     /// Where the monitor draws.
     pub board: channel::Live,
     /// The shepherd session the flock is read from.
     pub live: Arc<Live>,
-    /// The name cache every refresh updates, shared with the log stream.
-    pub names: Arc<Mutex<Names>>,
     /// Whether other dogs are left out of the monitor, from
     /// [`crate::config::Config::ignore_dogs`].
     pub ignore_dogs: bool,
@@ -61,17 +58,10 @@ impl Refresh {
     /// `/monitor start` falls back to the floor. What they agree on is
     /// what this reads.
     #[must_use]
-    pub fn new(
-        config: &Config,
-        channel: u64,
-        interval: UpDuration,
-        live: &Arc<Live>,
-        names: &Arc<Mutex<Names>>,
-    ) -> Self {
+    pub fn new(config: &Config, channel: u64, interval: UpDuration, live: &Arc<Live>) -> Self {
         Self {
             board: channel::Live::new(&config.token, channel),
             live: Arc::clone(live),
-            names: Arc::clone(names),
             ignore_dogs: config.ignore_dogs,
             interval: Duration::from_millis(interval.as_millis()),
         }
@@ -129,7 +119,6 @@ pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
         let Refresh {
             board,
             live,
-            names,
             ignore_dogs,
             interval,
         } = refresh;
@@ -177,10 +166,7 @@ pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
                 biased;
                 () = stop.wait() => return,
                 _ = ticker.tick() => {
-                    if let Err(err) = monitor
-                        .update_all(&board, &live, &names, ignore_dogs)
-                        .await
-                    {
+                    if let Err(err) = monitor.update_all(&board, &live, ignore_dogs).await {
                         eprintln!("shep-discord: {err}");
                     }
                 }
@@ -218,16 +204,12 @@ pub async fn refresh_now<B: Board>(
     monitor: &Monitor,
     board: &B,
     live: &Live,
-    names: &Mutex<Names>,
     ignore_dogs: bool,
 ) -> Result<Option<usize>, Error> {
     if !monitor.is_running() {
         return Ok(None);
     }
-    monitor
-        .update_all(board, live, names, ignore_dogs)
-        .await
-        .map(Some)
+    monitor.update_all(board, live, ignore_dogs).await.map(Some)
 }
 
 /// Start the monitor `dogs.toml` asks to run from boot, and say whether
@@ -238,19 +220,11 @@ pub async fn refresh_now<B: Board>(
 /// interval is an operator saying the monitor runs on demand through
 /// `/monitor start` rather than from boot. Called once by the run loop
 /// rather than on every config reread; see that call site for why.
-pub fn start_from_config(
-    monitor: &Arc<Monitor>,
-    config: &Config,
-    live: &Arc<Live>,
-    names: &Arc<Mutex<Names>>,
-) -> bool {
+pub fn start_from_config(monitor: &Arc<Monitor>, config: &Config, live: &Arc<Live>) -> bool {
     let (Some(interval), Some(channel)) = (config.monitor_interval, config.monitor_channel) else {
         return false;
     };
-    start(
-        monitor,
-        Refresh::new(config, channel, interval, live, names),
-    )
+    start(monitor, Refresh::new(config, channel, interval, live))
 }
 
 #[cfg(test)]
@@ -280,7 +254,6 @@ mod tests {
         let (live, mut fake) = test_live().await;
         let monitor = Monitor::new();
         let sink = CountingChannel::new();
-        let names = Mutex::new(Names::new());
 
         // Armed but never expected to be asked: the gate has to turn this
         // away before it reaches the shepherd. Arming it anyway means a
@@ -290,7 +263,7 @@ mod tests {
         fake.expect(Request::ListFlock)
             .answer(Response::Flock(vec![info(1, "web")]));
 
-        let redrawn = refresh_now(&monitor, &sink, &live, &names, false)
+        let redrawn = refresh_now(&monitor, &sink, &live, false)
             .await
             .expect("ok");
 
@@ -305,7 +278,6 @@ mod tests {
         let (live, mut fake) = test_live().await;
         let monitor = Monitor::new();
         let sink = CountingChannel::new();
-        let names = Mutex::new(Names::new());
 
         // A task that stays alive until dropped, standing in for a real
         // refresh loop, which would need a token and a channel behind it.
@@ -316,13 +288,12 @@ mod tests {
         fake.expect(Request::ListFlock)
             .answer(Response::Flock(vec![info(1, "web"), info(2, "api")]));
 
-        let redrawn = refresh_now(&monitor, &sink, &live, &names, false)
+        let redrawn = refresh_now(&monitor, &sink, &live, false)
             .await
             .expect("ok");
 
         assert_eq!(redrawn, Some(2), "both sheep were drawn");
         assert_eq!(sink.sends(), 2);
-        assert_eq!(names.lock().expect("not poisoned").get(2), "api");
     }
 
     /// A config that names no channel, or no interval, asks for no monitor
@@ -331,7 +302,6 @@ mod tests {
     async fn a_config_that_does_not_ask_for_a_boot_monitor_starts_nothing() {
         let (live, _fake) = test_live().await;
         let live = Arc::new(live);
-        let names = Arc::new(Mutex::new(Names::new()));
         let monitor = Arc::new(Monitor::new());
 
         for toml in [
@@ -341,7 +311,7 @@ mod tests {
         ] {
             let config = Config::from_toml(toml).expect("parsed");
             assert!(
-                !start_from_config(&monitor, &config, &live, &names),
+                !start_from_config(&monitor, &config, &live),
                 "{toml:?} does not ask for a monitor from boot"
             );
             assert!(!monitor.is_running());

@@ -2,34 +2,25 @@
 //! and getting the set of them in front of Discord.
 
 use core::future::Future;
-use std::{
-    pin::Pin,
-    sync::{Arc, Mutex},
-};
+use std::{pin::Pin, sync::Arc};
 
 use serenity::all::{
     CommandInteraction, ComponentInteraction, Context, CreateCommand, GuildId, Http,
 };
 
-use crate::{bot::monitor::Monitor, config::Config, error::Error, names::Names, shepherd::Live};
+use crate::{bot::monitor::Monitor, config::Config, error::Error, shepherd::Live};
 
 /// The state every [`Command`] reads to reach the shepherd, this dog's own
-/// resolved config, and the current id-to-name cache.
+/// resolved config, and the live monitor.
 ///
 /// Named `bot::State`. [`crate::stream::state::State`] is a second, unrelated
 /// type in this crate, built for the log-buffering pipeline; the two share
 /// no fields and no lifecycle, so neither is ever called just "State" in a
 /// doc comment that a reader could take for the other one.
 ///
-/// `std::sync::Mutex` around `names` rather than `tokio::sync::Mutex`:
-/// [`Names::refresh`] and [`Names::get`] are both synchronous, so nothing
-/// here ever holds this lock across an `.await`, and a plain mutex is the
-/// simpler tool for a lock that is only ever held across a few synchronous
-/// field reads.
-///
 /// `Clone` because [`crate::bot::run`] rebuilds a fresh [`interaction::Handler`]
 /// on every gateway reconnect attempt: every field is an `Arc`, so cloning
-/// shares the same shepherd session, config, and name cache across
+/// shares the same shepherd session, config, and monitor across
 /// attempts rather than copying any of them.
 ///
 /// [`interaction::Handler`]: crate::bot::interaction::Handler
@@ -37,7 +28,6 @@ use crate::{bot::monitor::Monitor, config::Config, error::Error, names::Names, s
 pub struct State {
     pub live: Arc<Live>,
     pub config: Arc<Config>,
-    pub names: Arc<Mutex<Names>>,
     /// The live monitor, shared with whatever else drives it: `/monitor`
     /// starts and stops the refresh task through this, and the log
     /// stream's own bus subscription redraws a sheep through the same

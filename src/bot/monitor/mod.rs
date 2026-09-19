@@ -58,7 +58,6 @@ use tokio::{sync::Mutex as AsyncMutex, task::JoinHandle};
 use crate::{
     bot::{channel::Board, embed},
     error::Error,
-    names::Names,
     shepherd::Live,
     stop,
 };
@@ -295,18 +294,12 @@ impl Monitor {
         }
     }
 
-    /// Redraw the whole flock: refresh the name cache, update every sheep,
-    /// and delete the message of every sheep that is no longer there.
+    /// Redraw the whole flock: update every sheep, and delete the message
+    /// of every sheep that is no longer there.
     ///
     /// One sheep's failed draw is printed and the rest are still drawn: a
     /// single embed Discord refuses must not leave the other ninety-nine
     /// stale, and the next refresh tries it again.
-    ///
-    /// The name cache is refreshed from the whole roll, dogs included,
-    /// even when `ignore_dogs` keeps them out of the monitor: [`Names`] is
-    /// shared with the log stream, which renders a line by whatever id it
-    /// arrives under, and a cache missing the dogs would render those
-    /// lines under a placeholder.
     ///
     /// Both the forget counts and the set of sheep already drawn are read
     /// BEFORE the muster roll, so everything this function decides is
@@ -328,13 +321,11 @@ impl Monitor {
         &self,
         board: &B,
         live: &Live,
-        names: &Mutex<Names>,
         ignore_dogs: bool,
     ) -> Result<usize, Error> {
         let marks = self.forget_marks();
         let already_drawn = self.drawn();
         let roll = live.flock().await?;
-        names.lock().expect("not poisoned").refresh(&roll);
 
         let drawn: Vec<ProcessInfo> = if ignore_dogs {
             roll.into_iter().filter(|info| info.dog.is_none()).collect()
@@ -675,13 +666,12 @@ mod tests {
         let (live, mut fake) = test_live().await;
         let monitor = Monitor::new();
         let sink = CountingChannel::new();
-        let names = Mutex::new(Names::new());
 
         fake.expect(Request::ListFlock)
             .answer(Response::Flock(vec![info(1, "web")]));
         let api = info(2, "api");
         let (refreshed, drawn) = tokio::join!(
-            monitor.update_all(&sink, &live, &names, false),
+            monitor.update_all(&sink, &live, false),
             monitor.update_one(&sink, &api),
         );
         refreshed.expect("ok");
@@ -744,22 +734,18 @@ mod tests {
         assert_eq!(departed(&[], &[1]), Vec::<u32>::new());
     }
 
-    /// A whole refresh: the name cache follows the roll, every sheep is
-    /// drawn, and the sheep that left takes its message with it.
+    /// A whole refresh: every sheep is drawn, and the sheep that left
+    /// takes its message with it.
     #[tokio::test]
     async fn a_refresh_draws_the_flock_and_deletes_what_left() {
         let (live, mut fake) = test_live().await;
         let monitor = Monitor::new();
         let sink = CountingChannel::new();
-        let names = Mutex::new(Names::new());
 
         monitor.adopt(HashMap::from([(9, MessageId::new(90))]));
         fake.expect(Request::ListFlock)
             .answer(Response::Flock(vec![info(1, "web")]));
-        let redrawn = monitor
-            .update_all(&sink, &live, &names, false)
-            .await
-            .expect("ok");
+        let redrawn = monitor.update_all(&sink, &live, false).await.expect("ok");
 
         assert_eq!(redrawn, 1, "one sheep drawn, and the count says so");
         assert_eq!(sink.sends(), 1, "the one live sheep is drawn");
@@ -768,17 +754,15 @@ mod tests {
             vec![MessageId::new(90)],
             "the sheep no longer in the flock loses its message"
         );
-        assert_eq!(names.lock().expect("not poisoned").get(1), "web");
     }
 
-    /// `ignore_dogs` keeps other dogs out of the monitor, but not out of
-    /// the name cache the log stream renders lines with.
+    /// `ignore_dogs` keeps other dogs out of the monitor. The only test
+    /// of that flag being set, so the dog it hides is the whole point.
     #[tokio::test]
-    async fn ignoring_dogs_still_names_them_for_the_log_stream() {
+    async fn a_dog_is_left_out_of_the_monitor_when_ignore_dogs_is_set() {
         let (live, mut fake) = test_live().await;
         let monitor = Monitor::new();
         let sink = CountingChannel::new();
-        let names = Mutex::new(Names::new());
 
         // `dog_sample` numbers its dog 0, which is exactly what makes
         // this test readable: the sheep is 1 and the dog is 0.
@@ -786,16 +770,15 @@ mod tests {
             info(1, "web"),
             dog_sample("dogsbody"),
         ]));
-        monitor
-            .update_all(&sink, &live, &names, true)
-            .await
-            .expect("ok");
+        monitor.update_all(&sink, &live, true).await.expect("ok");
 
-        assert_eq!(sink.sends(), 1, "the dog is not drawn");
+        assert_eq!(sink.sends(), 1, "the sheep is drawn and the dog is not");
+        let posted = sink.posted();
+        let json = serde_json::to_value(&posted[0]).expect("json");
         assert_eq!(
-            names.lock().expect("not poisoned").get(0),
-            "dogsbody",
-            "but a log line from it still renders under its name"
+            json["title"].as_str().expect("title"),
+            "web",
+            "the one message in the channel is the sheep's, not the dog's"
         );
     }
 

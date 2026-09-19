@@ -54,8 +54,8 @@ const GATEWAY_RETRY_INTERVAL: core::time::Duration = core::time::Duration::from_
 /// `state` and `config` are cloned into a fresh [`interaction::Handler`]
 /// on every attempt: every field either carries is an `Arc`, so a
 /// reconnect after a dropped shard shares the same shepherd session,
-/// resolved config, and name cache the last attempt used rather than
-/// losing any of it.
+/// resolved config, and monitor the last attempt used rather than losing
+/// any of it.
 ///
 /// Never returns an error itself: a failed attempt is printed and retried
 /// rather than propagated, on the reasoning above. [`run_once`] is the one
