@@ -1,0 +1,75 @@
+# release-plz owns the changelog, the version bump, the tag, the GitHub
+# release and the upload. Merging the release pull request is the whole
+# release, and even that merge is automatic.
+#
+# Adapted from shep-log-rotate's release-plz.toml, which itself was
+# rewritten on 2026-08-27 to match zendriver-rs. Rin's call: zendriver-rs's
+# setup is the one to copy, across shep and every dog. What that setup is:
+#
+#   changelog_update    true, with an explicit template. See
+#                       release-plz-changelog.toml, which skips docs, test,
+#                       ci, chore and style commits so a generated section
+#                       stays short and reads like a hand-written one. Two
+#                       survive those skips on purpose: release-plz's own
+#                       `chore: update Cargo.toml dependencies`, parsed before
+#                       the generic chore skip and grouped under Internal, and
+#                       anything marked breaking, which
+#                       `protect_breaking_commits` keeps regardless.
+#   release_always      unset (release-plz's default, true). See below; the
+#                       explicit `false` this used to carry was actively
+#                       dangerous.
+#   semver_check        true. cargo-semver-checks against the published
+#                       version, so an accidental breaking change fails the
+#                       release PR rather than shipping in a patch.
+#   git_release_enable  true. Already the default; stated so it survives a
+#                       future default change.
+#   publish_no_verify   false. Also the default. Stated because the opposite
+#                       skips the pre-upload build, and an upload cannot be
+#                       undone.
+#
+# ## Why release_always = false had to go
+#
+# release-plz decides a commit "came from a release PR" by checking that the
+# PR's BRANCH starts with `release-plz-`, not by its title. A version bump
+# merged from a branch named anything else leaves the version stranded:
+# bumped in Cargo.toml, absent from crates.io, unreachable until some later
+# `release-plz-` merge lands.
+#
+# shep stranded a version this way twice in August 2026, the second time with
+# no path forward that did not involve editing the workflow. A setting whose
+# documented failure mode is "the release silently does not happen and cannot
+# be made to happen" is not a safety feature. release-plz's default publishes
+# whenever the manifest names an unpublished version, which cannot deadlock
+# that way.
+#
+# What replaced it is not in this file. The `main` ruleset requires lint,
+# docs, msrv and the test job to pass, so an untested commit cannot reach
+# main to be published in the first place.
+
+[workspace]
+# Marks a GitHub release as a pre-release when the version carries a SemVer
+# pre-release tag. 0.1.0 does not, so this is inert today; it is kept for the
+# next time a version does.
+git_release_type = "auto"
+# Attached so .coderabbit.yaml can skip reviewing a release pull request:
+# merging one IS the release, and its diff is a version bump plus a changelog
+# generated from commits already reviewed on their own pull requests.
+#
+# The label has to EXIST in the repository first. release-plz opens the pull
+# request and then calls GitHub's label endpoint, so a name nothing has
+# defined can leave the pull request opened and unlabelled. A title keyword
+# was the other candidate and does not hold: release-plz force-pushes its
+# branch on every push to main, each force-push starts an incremental
+# review, and the title gate is not re-evaluated on those. Learned in shep,
+# on its own release pull request.
+pr_labels = ["release"]
+
+git_release_enable = true
+
+changelog_update = true
+changelog_config = "release-plz-changelog.toml"
+
+semver_check = true
+publish_no_verify = false
+
+# No `[[package]]` sections: one crate, nothing to group or exclude.
