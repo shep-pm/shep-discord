@@ -66,6 +66,46 @@ fn unadopted_message(section: &str) -> String {
     )
 }
 
+/// The message printed when this dog's own section of `dogs.toml` could
+/// not be read or could not be resolved into a [`config::Config`].
+///
+/// Names the section, which the bare error does not. The likeliest
+/// failure on a first run is an operator who adopted this dog under one
+/// name and wrote `[discord]` in `dogs.toml` under another: the shepherd
+/// serves an empty section for the name nobody wrote, resolving it fails
+/// on `token is required`, and that sentence alone sends the reader to
+/// look at a `token` they have already set correctly. The section name is
+/// the whole diagnosis.
+fn config_failed_message(section: &str, err: &Error) -> String {
+    format!("shep-discord: [{section}] in dogs.toml: {err}")
+}
+
+/// Whether this cycle's config outcome is worth printing, threading the
+/// last complaint through `last` rather than a process-global, the same
+/// shape and for the same reason as `session::warn_once`.
+///
+/// `None` is a cycle that read the config fine, and it clears the state,
+/// so a failure that comes back after a good read is announced again.
+/// `Some` prints only when the sentence differs from the last one
+/// printed: an operator who fixes one mistake in `dogs.toml` and makes a
+/// different one hears about the new one, while an unfixed mistake says
+/// its piece once instead of every [`RECHECK_INTERVAL`] for the life of
+/// the process. At thirty seconds that is 2,880 identical lines a day,
+/// which is how a real problem gets scrolled past.
+fn worth_saying(message: Option<&str>, last: &mut Option<String>) -> bool {
+    match message {
+        None => {
+            *last = None;
+            false
+        }
+        Some(message) if last.as_deref() == Some(message) => false,
+        Some(message) => {
+            *last = Some(message.to_owned());
+            true
+        }
+    }
+}
+
 /// The message printed when the gateway task this loop spawned has ended
 /// on its own, distinguishing a panic from an ordinary return.
 ///
@@ -253,6 +293,9 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // beside every one already in the channel. Shared with the gateway
     // task through `bot::command::State`.
     let monitor = Arc::new(bot::monitor::Monitor::new());
+    // The last config complaint printed, so an unfixed `dogs.toml` says
+    // its piece once rather than on every cycle. See `worth_saying`.
+    let mut last_config_complaint: Option<String> = None;
     // Whether the boot start below has already had its one turn: it gets
     // exactly one, and the comment at that call site has the why.
     let mut monitor_started = false;
@@ -321,6 +364,7 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                 .and_then(|toml| config::Config::from_toml(&toml))
             {
                 Ok(config) => {
+                    worth_saying(None, &mut last_config_complaint);
                     let config = Arc::new(config);
 
                     if gateway.is_none() {
@@ -386,7 +430,12 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         }
                     }
                 }
-                Err(err) => eprintln!("shep-discord: {err}"),
+                Err(err) => {
+                    let message = config_failed_message(&identity.section, &err);
+                    if worth_saying(Some(&message), &mut last_config_complaint) {
+                        eprintln!("{message}");
+                    }
+                }
             }
         }
 
@@ -411,6 +460,48 @@ mod tests {
         assert_no_dashes(&unadopted_message(DEFAULT_NAME));
         assert_no_dashes(&refused_message(Some("9"), "protocol too old"));
         assert_no_dashes(&gateway_ended_message(&Ok(())));
+        assert_no_dashes(&config_failed_message(
+            "chatter",
+            &Error::Config("token is required".to_owned()),
+        ));
+    }
+
+    /// The name of the section is the diagnosis for the likeliest first
+    /// run failure, an operator adopting this dog as one name and writing
+    /// `[discord]` under another, so it has to be in the sentence.
+    #[test]
+    fn a_config_complaint_names_the_section_it_read() {
+        let message =
+            config_failed_message("chatter", &Error::Config("token is required".to_owned()));
+        assert_eq!(
+            message,
+            "shep-discord: [chatter] in dogs.toml: token is required"
+        );
+    }
+
+    /// Once per problem, not once per cycle, and again when the problem
+    /// changes. At the recheck interval an unfixed `dogs.toml` would
+    /// otherwise print 2,880 identical lines a day.
+    #[test]
+    fn a_config_complaint_repeats_only_when_it_changes() {
+        let mut last = None;
+        assert!(worth_saying(Some("token is required"), &mut last));
+        assert!(
+            !worth_saying(Some("token is required"), &mut last),
+            "the same unfixed problem says nothing on the next cycle"
+        );
+        assert!(
+            worth_saying(Some("guild_id is required"), &mut last),
+            "a different problem is a different sentence and is printed"
+        );
+        assert!(
+            !worth_saying(None, &mut last),
+            "a good read prints nothing of its own"
+        );
+        assert!(
+            worth_saying(Some("guild_id is required"), &mut last),
+            "and a problem coming back after a good read is announced again"
+        );
     }
 
     /// An environment holding exactly one variable, which is the only one

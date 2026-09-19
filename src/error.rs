@@ -29,8 +29,13 @@ pub enum Error {
     /// Constructed in `shepherd::unexpected`, the one place this crate
     /// reads a `Response`.
     Unexpected { asked: String, got: String },
-    /// `dogs.toml`'s `[discord]` section did not parse, or a value in it
-    /// is outside what this dog accepts.
+    /// This dog's own section of `dogs.toml` did not parse, or a value in
+    /// it is outside what this dog accepts.
+    ///
+    /// Carries the problem and not the section name, because the section
+    /// is whatever name this dog was adopted under: `[discord]` only by
+    /// default. Whoever prints this knows that name and says it;
+    /// `crate::run::config_failed_message` is the one place that does.
     Config(String),
     /// Discord itself refused or could not answer a request a command
     /// made once the gateway came up: a broken token, a permission the
@@ -57,7 +62,7 @@ impl fmt::Display for Error {
             Self::Unexpected { asked, got } => {
                 write!(f, "asked the shepherd for {asked} and got {got}")
             }
-            Self::Config(message) => write!(f, "[discord] in dogs.toml: {message}"),
+            Self::Config(message) => write!(f, "{message}"),
             Self::Discord(err) => write!(f, "Discord refused a request: {err}"),
         }
     }
