@@ -55,16 +55,10 @@ const GATEWAY_RETRY_INTERVAL: core::time::Duration = core::time::Duration::from_
 /// print.
 pub async fn run(config: Arc<Config>, state: command::State, mut stop: Stop) {
     loop {
-        // Cloned before the `select!` rather than inside it: `stop.wait()`
-        // below borrows `stop` mutably for as long as the `select!` body
-        // runs, and `run_once` needs its own clone to hand to the
-        // attempt's own shutdown watcher, so that clone has to exist
-        // before the mutable borrow starts rather than alongside it.
-        let attempt_stop = stop.clone();
         tokio::select! {
             biased;
             () = stop.wait() => return,
-            outcome = run_once(&config, state.clone(), attempt_stop) => {
+            outcome = run_once(&config, state.clone()) => {
                 if let Err(err) = outcome {
                     eprintln!("shep-discord: the gateway connection ended: {err}");
                 }
@@ -76,21 +70,32 @@ pub async fn run(config: Arc<Config>, state: command::State, mut stop: Stop) {
     }
 }
 
-/// One gateway connection attempt: build a client, start it, and shut it
-/// down cleanly the moment `stop` resolves.
+/// One gateway connection attempt: build a client and run it until it
+/// returns on its own, or until `run`'s own outer `select!` above drops
+/// this whole future because `stop` resolved first.
 ///
-/// The shutdown watcher runs as its own task rather than inside a
-/// `tokio::select!` around `client.start()`: `start()` does not return
-/// until the shard manager itself is told to stop, so racing it against
-/// `stop.wait()` in one `select!` would drop the still-running client
-/// future the moment `stop` resolved, leaving the shard's own connection
-/// open with nothing left polling it. Asking the shard manager to shut
-/// down instead lets `start()` return on its own once it actually has.
-async fn run_once(
-    config: &Config,
-    state: command::State,
-    mut stop: Stop,
-) -> Result<(), serenity::Error> {
+/// There used to be a second mechanism here: a task spawned to wait on a
+/// clone of `stop` and call `shard_manager.shutdown_all()`, closing the
+/// websocket properly before this attempt ended, with `shutdown.abort()`
+/// cleaning that task up once `client.start()` returned. It never ran.
+/// `run`'s `select!` is `biased` with `stop.wait()` listed first, so the
+/// instant `stop` resolves that branch wins immediately and this whole
+/// function's future, the shutdown task included, is dropped rather than
+/// polled again; `shutdown.abort()` only ran after `client.start()`
+/// returned on its own, which a stop never let happen. Measured: ctrl-c
+/// returns in about 0.02 seconds, far too fast for a websocket close
+/// handshake to have taken place, so the graceful path was dead code that
+/// looked alive.
+///
+/// The connection is simply dropped instead. Discord treats a dropped
+/// gateway connection the same as one closed properly, and the process is
+/// exiting either way, so nothing is lost by not closing it in words. A
+/// real graceful close would mean giving up the race above that makes
+/// ctrl-c prompt: `run_once` would have to keep running until its own
+/// shutdown finished, rather than being torn down the moment `stop.wait()`
+/// wins the outer `select!`, which is a different shape of loop than
+/// `run`'s.
+async fn run_once(config: &Config, state: command::State) -> Result<(), serenity::Error> {
     // `GUILDS` alone, no `GUILD_MESSAGES`: a slash command interaction
     // arrives over the gateway regardless of intent, since it is Discord
     // asking this bot to act rather than a message this bot would have to
@@ -106,14 +111,5 @@ async fn run_once(
     let mut client = Client::builder(&config.token, GatewayIntents::GUILDS)
         .event_handler(handler)
         .await?;
-
-    let shard_manager = Arc::clone(&client.shard_manager);
-    let shutdown = tokio::spawn(async move {
-        stop.wait().await;
-        shard_manager.shutdown_all().await;
-    });
-
-    let result = client.start().await;
-    shutdown.abort();
-    result
+    client.start().await
 }
