@@ -87,9 +87,9 @@ guild_id = 123456789012345678
 | `buffer_lines` | `2000` | How many lines the buffer holds before dropping the oldest. `0` is refused. |
 | `ignore_dogs` | `false` | Hide other dogs from listings and the monitor. |
 
-`monitor_interval` is the one setting that survives a restart. `/monitor
-start` overrides the refresh interval for the running process only; it is
-never written back to `dogs.toml`.
+`monitor_interval` is what starts the monitor on boot and sets its pace.
+`/monitor start` starts it for the running process only, on that same
+interval, and never writes to `dogs.toml`.
 
 ## Commands
 
@@ -110,18 +110,19 @@ Drives the flock.
 `name` is required for every verb except `list` and `save`, which act on the
 whole flock. Autocomplete suggests names from the live flock.
 
-### `/monitor start|stop`
+### `/monitor start|update|stop`
 
 Toggles the live monitor for this process's lifetime. It does not write
-`dogs.toml`. `start` uses `monitor_interval` from config, or `/monitor
-start`'s own override, and refuses to run twice at once. `stop` ends the
-refresh task; both say so.
+`dogs.toml`. `start` refreshes on `monitor_interval`, or on the 15 second
+floor when that is unset, and refuses to run twice at once. `update`
+redraws every sheep now and leaves the schedule alone. `stop` ends the
+refresh task and waits for it to finish. All three say what they did.
 
-On boot, and after any restart, the monitor rediscovers itself: it fetches
-the last 100 messages in `monitor_channel`, keeps the ones this bot
-authored, and parses the sheep id back out of each message's buttons. That
-rebuilds the per-sheep cache for free and needs no state carried across the
-restart.
+On every boot the monitor rediscovers itself. It reads `monitor_channel` a
+page at a time, keeps the messages this bot wrote, and reads each sheep id
+back out of the buttons. It stops once it has found every sheep in the
+flock, or once the channel runs out. That rebuilds the per-sheep cache for
+free, so no state has to survive the restart.
 
 ### `/system`
 
