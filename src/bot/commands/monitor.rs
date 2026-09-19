@@ -173,7 +173,11 @@ impl Command for MonitorCommand {
             let reply = match sub.name {
                 "start" => self.start(state),
                 "stop" => {
-                    if state.monitor.stop() {
+                    // Awaited rather than fired and forgotten: see
+                    // `Monitor::stop` for why the caller is the only
+                    // party that can wait, and why a start straight after
+                    // a stop would otherwise run two tasks.
+                    if state.monitor.stop().await {
                         stopped_message().to_owned()
                     } else {
                         not_running_message().to_owned()

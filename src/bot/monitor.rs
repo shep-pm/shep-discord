@@ -415,20 +415,43 @@ impl Monitor {
             .is_some_and(|running| !running.handle.is_finished())
     }
 
-    /// End the refresh task, and say whether there was one.
+    /// End the refresh task, wait for it to finish, and say whether
+    /// there was one.
     ///
     /// Asks rather than aborts: the task's `select!` is biased on the
     /// stop, so it returns at the top of its next turn around the loop,
     /// and a refresh already in flight finishes its Discord calls first
     /// rather than stopping half way through a redraw with an embed
-    /// posted and its id not yet cached. The only path this cannot end
-    /// promptly is a Discord request that never returns, and serenity's
+    /// posted and its id not yet cached.
+    ///
+    /// Then waits, which is the part that matters for correctness rather
+    /// than tidiness. Dropping the handle and returning would let a
+    /// `/monitor stop` immediately followed by a `/monitor start` leave
+    /// two refresh tasks running against one monitor, and two tasks are
+    /// worse than none: one task's departed sweep can delete a message
+    /// the other posted moments earlier for a sheep that is perfectly
+    /// alive. Only the caller can wait, because only the caller knows it
+    /// is allowed to: `/monitor stop` is a command with a deferred
+    /// interaction behind it, so it has minutes to answer in, and every
+    /// other path to here is a test.
+    ///
+    /// The wait is bounded by whatever the task is doing, which is at
+    /// worst one refresh of the flock. A Discord request that never
+    /// returns is the only thing that could stretch it, and serenity's
     /// HTTP client times out rather than hanging forever.
-    pub fn stop(&self) -> bool {
-        let Some(running) = self.task.lock().expect("not poisoned").take() else {
+    pub async fn stop(&self) -> bool {
+        // Taken in its own statement so the `std::sync::Mutex` guard is
+        // dropped before the await below, which is this module's standing
+        // rule and, here, also what stops `stop` from being unable to
+        // return a `Send` future to the command that calls it.
+        let running = self.task.lock().expect("not poisoned").take();
+        let Some(running) = running else {
             return false;
         };
         running.request.request();
+        if let Err(err) = running.handle.await {
+            eprintln!("{}", task_ended_badly_message(&err));
+        }
         true
     }
 }
@@ -436,6 +459,22 @@ impl Monitor {
 impl Default for Monitor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// What is printed when the refresh task did not end by returning.
+///
+/// A function rather than an inline `eprintln!`, the same reason `main`'s
+/// own `gateway_ended_message` is one: it lets the dash check reach the
+/// text without a task to panic first. An ordinary return prints nothing,
+/// because that is what stopping is supposed to look like.
+fn task_ended_badly_message(err: &tokio::task::JoinError) -> String {
+    if err.is_panic() {
+        format!(
+            "shep-discord: the monitor refresh task panicked: {err}. The messages it drew stay in              the channel, and the next start adopts them."
+        )
+    } else {
+        format!("shep-discord: the monitor refresh task was cancelled: {err}.")
     }
 }
 
@@ -619,6 +658,8 @@ impl Wired {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
     use shep_client::shep_core::{
         protocol::{Request, Response},
         status::ProcStatus,
@@ -814,6 +855,43 @@ mod tests {
         );
     }
 
+    /// A `/monitor stop` followed straight away by a `/monitor start`
+    /// must not leave two tasks redrawing one channel, which is what
+    /// `start`'s own doc promises. Dropping the handle rather than
+    /// joining it broke that promise: the request was sent and the task
+    /// kept running while the next start spawned its replacement.
+    ///
+    /// The flag is set by the task on its way out, so asserting it the
+    /// instant `stop` returns is what proves `stop` waited rather than
+    /// merely asked. A hand-installed task stands in for the real refresh
+    /// loop, which would need a token and a channel behind it.
+    #[tokio::test]
+    async fn stopping_waits_for_its_task_rather_than_abandoning_it() {
+        let monitor = Monitor::new();
+        let ended = Arc::new(AtomicBool::new(false));
+        let (mut stop, request) = Stop::new();
+        let flag = Arc::clone(&ended);
+        let handle = tokio::spawn(async move {
+            stop.wait().await;
+            // A refresh already in flight, finishing after the stop was
+            // asked for and before the task returns.
+            tokio::task::yield_now().await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        *monitor.task.lock().expect("not poisoned") = Some(Running { handle, request });
+        assert!(monitor.is_running());
+
+        assert!(monitor.stop().await);
+
+        assert!(
+            ended.load(Ordering::SeqCst),
+            "stop returned while its task was still running, so a start could spawn a second one \
+             beside it"
+        );
+        assert!(!monitor.is_running());
+        assert!(!monitor.stop().await, "there is nothing left to stop");
+    }
+
     #[test]
     fn only_the_cached_sheep_missing_from_the_flock_are_departed() {
         assert_eq!(departed(&[1, 2, 3], &[2]), vec![1, 3]);
@@ -898,6 +976,16 @@ mod tests {
             embed::embed_character_count(&sheep) <= MESSAGE_CHARACTER_BUDGET,
             "one sheep's own embed has a whole message's budget to itself here"
         );
+    }
+
+    /// The one string this module prints for a person that a test can
+    /// reach without a task panicking first.
+    #[tokio::test]
+    async fn nothing_printed_for_a_person_carries_a_dash() {
+        let panicked = tokio::spawn(async { panic!("deliberate") })
+            .await
+            .expect_err("the task panicked");
+        crate::test_support::assert_no_dashes(&task_ended_badly_message(&panicked));
     }
 
     /// The table of what the bus asks the monitor to do. `Reload` and its
