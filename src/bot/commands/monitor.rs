@@ -194,10 +194,14 @@ impl MonitorCommand {
             return Ok(no_channel_message().to_owned());
         };
         let board = channel::Live::new(&state.config.token, channel);
-        let redrawn = state
-            .monitor
-            .refresh_now(&board, &state.live, &state.names, state.config.ignore_dogs)
-            .await?;
+        let redrawn = refresh::refresh_now(
+            &state.monitor,
+            &board,
+            &state.live,
+            &state.names,
+            state.config.ignore_dogs,
+        )
+        .await?;
         Ok(match redrawn {
             Some(count) => redrew_reply(count),
             None => nothing_to_redraw_message().to_owned(),

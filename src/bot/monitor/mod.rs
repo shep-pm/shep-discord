@@ -356,42 +356,6 @@ impl Monitor {
         Ok(redrawn)
     }
 
-    /// Redraw the flock right now, out of the ticker's turn, and say how
-    /// many sheep were redrawn. `None` when the monitor is not running.
-    ///
-    /// What `/monitor update` calls. The gate lives here rather than in
-    /// the command because it reads the same field
-    /// [`Monitor::is_running`] does, and because both of its answers are
-    /// then testable against a fake board with no gateway behind them.
-    ///
-    /// One extra pass, not a new ticker: nothing here touches the task or
-    /// its schedule, so the next tick falls exactly when it would have.
-    /// Running alongside that tick is safe for the reasons the rest of
-    /// this module is built on, and this call is not special. The
-    /// per-sheep guard serialises a manual draw against a scheduled one,
-    /// so the second to arrive edits what the first posted rather than
-    /// posting again; each pass reads its own forget counts and its own
-    /// already-drawn set before its own muster roll, so neither sweeps
-    /// away what the other just drew nor reposts what the other just
-    /// deleted.
-    ///
-    /// # Errors
-    /// As [`Monitor::update_all`].
-    pub async fn refresh_now<B: Board>(
-        &self,
-        board: &B,
-        live: &Live,
-        names: &Mutex<Names>,
-        ignore_dogs: bool,
-    ) -> Result<Option<usize>, Error> {
-        if !self.is_running() {
-            return Ok(None);
-        }
-        self.update_all(board, live, names, ignore_dogs)
-            .await
-            .map(Some)
-    }
-
     /// Delete the message of every sheep in `already_drawn` that the
     /// flock no longer holds.
     ///
@@ -734,61 +698,6 @@ mod tests {
             2,
             "one message each: the sheep in the roll and the sheep drawn beside it"
         );
-    }
-
-    /// `/monitor update` against a monitor nobody started draws nothing
-    /// and says so, rather than quietly redrawing a channel the operator
-    /// has turned off. The same gate a bus event passes through.
-    #[tokio::test]
-    async fn a_redraw_is_refused_while_the_monitor_is_off() {
-        let (live, mut fake) = test_live().await;
-        let monitor = Monitor::new();
-        let sink = CountingChannel::new();
-        let names = Mutex::new(Names::new());
-
-        // Armed but never expected to be asked: the gate has to turn this
-        // away before it reaches the shepherd. Arming it anyway means a
-        // broken gate fails on the assertions below, having drawn a sheep
-        // it should not have, rather than on the fake's own panic about an
-        // unarmed request, which would report the same bug less clearly.
-        fake.expect(Request::ListFlock)
-            .answer(Response::Flock(vec![info(1, "web")]));
-
-        let redrawn = monitor
-            .refresh_now(&sink, &live, &names, false)
-            .await
-            .expect("ok");
-
-        assert_eq!(redrawn, None, "there is no monitor to redraw");
-        assert_eq!((sink.sends(), sink.edits(), sink.deletes()), (0, 0, 0));
-    }
-
-    /// With the monitor running, a redraw runs one full refresh out of the
-    /// ticker's turn and answers with what it drew.
-    #[tokio::test]
-    async fn a_redraw_while_running_refreshes_the_whole_flock() {
-        let (live, mut fake) = test_live().await;
-        let monitor = Monitor::new();
-        let sink = CountingChannel::new();
-        let names = Mutex::new(Names::new());
-
-        // A task that stays alive until dropped, standing in for a real
-        // refresh loop, which would need a token and a channel behind it.
-        let (mut stop, request) = Stop::new();
-        let handle = tokio::spawn(async move { stop.wait().await });
-        *monitor.task.lock().expect("not poisoned") = Some(Running { handle, request });
-
-        fake.expect(Request::ListFlock)
-            .answer(Response::Flock(vec![info(1, "web"), info(2, "api")]));
-
-        let redrawn = monitor
-            .refresh_now(&sink, &live, &names, false)
-            .await
-            .expect("ok");
-
-        assert_eq!(redrawn, Some(2), "both sheep were drawn");
-        assert_eq!(sink.sends(), 2);
-        assert_eq!(names.lock().expect("not poisoned").get(2), "api");
     }
 
     /// A `/monitor stop` followed straight away by a `/monitor start`
