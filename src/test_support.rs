@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use serenity::all::{CreateActionRow, CreateEmbed, MessageId};
 use shep_client::{
     ReconnectingClient,
     shep_core::{
@@ -13,7 +14,12 @@ use shep_client::{
 };
 use tokio::sync::mpsc;
 
-use crate::{limits::EMBED_TITLE_LIMIT, shepherd::Live};
+use crate::{
+    bot::channel::{Board, Posted},
+    error::Error,
+    limits::EMBED_TITLE_LIMIT,
+    shepherd::Live,
+};
 
 /// Assert `text` carries neither an em dash nor an en dash.
 ///
@@ -46,6 +52,119 @@ pub fn assert_no_dashes_deep(value: &serde_json::Value) {
         serde_json::Value::Array(items) => items.iter().for_each(assert_no_dashes_deep),
         serde_json::Value::Object(fields) => fields.values().for_each(assert_no_dashes_deep),
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+/// A [`Board`] that records what the monitor asked it to do and reaches no
+/// network at all.
+///
+/// Shared here rather than written once per test module: [`crate::bot::channel`]
+/// needs one to drive [`crate::bot::channel::rediscover`] and
+/// [`crate::bot::monitor`] needs the same one to count posts, edits and
+/// deletes, and a second copy of the same twenty lines is the drift this
+/// crate's own review keeps finding.
+///
+/// `state` is a `std::sync::Mutex` behind a plain `&self`, never held
+/// across the `yield_now` below, so this fake imposes no ordering of its
+/// own on the callers it is meant to measure.
+#[derive(Default)]
+pub struct CountingChannel {
+    state: Mutex<ChannelLog>,
+}
+
+/// Everything [`CountingChannel`] remembers.
+#[derive(Default)]
+struct ChannelLog {
+    sends: usize,
+    edits: usize,
+    deletes: usize,
+    next_id: u64,
+    recent: Vec<Posted>,
+    posted: Vec<CreateEmbed>,
+    deleted: Vec<MessageId>,
+}
+
+impl CountingChannel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The messages a later [`Board::recent`] answers with, newest first,
+    /// standing in for what a previous run of this dog left in the
+    /// channel.
+    pub fn preload(&self, messages: Vec<Posted>) {
+        self.state.lock().expect("not poisoned").recent = messages;
+    }
+
+    pub fn sends(&self) -> usize {
+        self.state.lock().expect("not poisoned").sends
+    }
+
+    pub fn edits(&self) -> usize {
+        self.state.lock().expect("not poisoned").edits
+    }
+
+    pub fn deletes(&self) -> usize {
+        self.state.lock().expect("not poisoned").deletes
+    }
+
+    /// Which message ids were deleted, in the order they were.
+    pub fn deleted(&self) -> Vec<MessageId> {
+        self.state.lock().expect("not poisoned").deleted.clone()
+    }
+
+    /// Every embed posted, in the order they were, for a test that cares
+    /// what was drawn rather than only how often.
+    pub fn posted(&self) -> Vec<CreateEmbed> {
+        self.state.lock().expect("not poisoned").posted.clone()
+    }
+}
+
+impl Board for CountingChannel {
+    /// Yields before recording, deliberately.
+    ///
+    /// A fake whose whole body runs without an await point lets a
+    /// `tokio::join!` of two calls finish the first before the second is
+    /// ever polled, so a test for concurrent posting would pass against a
+    /// monitor with no guard in it at all. Yielding here is what makes the
+    /// second caller reach its own "is there a message yet" question while
+    /// the first is still in flight, the way a real HTTP round trip
+    /// would.
+    async fn post(
+        &self,
+        embed: CreateEmbed,
+        _buttons: CreateActionRow,
+    ) -> Result<MessageId, Error> {
+        tokio::task::yield_now().await;
+        let mut state = self.state.lock().expect("not poisoned");
+        state.sends += 1;
+        state.next_id += 1;
+        state.posted.push(embed);
+        Ok(MessageId::new(state.next_id))
+    }
+
+    async fn edit(
+        &self,
+        _id: MessageId,
+        _embed: CreateEmbed,
+        _buttons: CreateActionRow,
+    ) -> Result<(), Error> {
+        tokio::task::yield_now().await;
+        self.state.lock().expect("not poisoned").edits += 1;
+        Ok(())
+    }
+
+    async fn delete(&self, id: MessageId) -> Result<(), Error> {
+        tokio::task::yield_now().await;
+        let mut state = self.state.lock().expect("not poisoned");
+        state.deletes += 1;
+        state.deleted.push(id);
+        Ok(())
+    }
+
+    async fn recent(&self) -> Result<Vec<Posted>, Error> {
+        tokio::task::yield_now().await;
+        Ok(self.state.lock().expect("not poisoned").recent.clone())
     }
 }
 

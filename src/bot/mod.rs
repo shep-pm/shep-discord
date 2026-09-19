@@ -5,15 +5,20 @@
 //! buttons; [`command`] is the contract every slash command implements and
 //! the state they all read; [`commands`] is where the concrete commands
 //! live; [`interaction`] wires an incoming gateway interaction to one of
-//! them; and [`run`] brings the gateway itself up. [`crate::stream`] is a
+//! them; and [`run`] brings the gateway itself up. [`channel`] and
+//! [`monitor`] are the live monitor: one message per sheep in a channel of
+//! its own, edited in place, with [`channel::Board`] as the seam the
+//! network sits behind. [`crate::stream`] is a
 //! separate connection to Discord, over REST alone, for the log-streaming
 //! half of this dog; nothing in this module touches it, and nothing in
 //! [`crate::stream`] touches a gateway.
 
+pub mod channel;
 pub mod command;
 pub mod commands;
 pub mod embed;
 pub mod interaction;
+pub mod monitor;
 
 use std::sync::Arc;
 
