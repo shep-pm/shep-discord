@@ -6,5 +6,6 @@
 //! each. [`crate::bot::command::registry`] is what lists them for
 //! [`crate::bot::interaction::Handler`] and for Discord.
 
+pub mod monitor;
 pub mod shep;
 pub mod system;

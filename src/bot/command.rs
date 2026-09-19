@@ -11,7 +11,7 @@ use serenity::all::{
     CommandInteraction, ComponentInteraction, Context, CreateCommand, GuildId, Http,
 };
 
-use crate::{config::Config, error::Error, names::Names, shepherd::Live};
+use crate::{bot::monitor::Monitor, config::Config, error::Error, names::Names, shepherd::Live};
 
 /// The state every [`Command`] reads to reach the shepherd, this dog's own
 /// resolved config, and the current id-to-name cache.
@@ -36,16 +36,16 @@ use crate::{config::Config, error::Error, names::Names, shepherd::Live};
 #[derive(Clone)]
 pub struct State {
     pub live: Arc<Live>,
-    #[allow(
-        dead_code,
-        reason = "read once a command needs its own resolved config, e.g. Task 13's /monitor reading monitor_interval; /system needs only live"
-    )]
     pub config: Arc<Config>,
-    #[allow(
-        dead_code,
-        reason = "read once a command needs to resolve a sheep's name from a numeric id; Task 12's /shep turned out not to need one, since every verb takes a name directly and it draws no buttons (see its own module doc), so this is still unread"
-    )]
     pub names: Arc<Mutex<Names>>,
+    /// The live monitor, shared with whatever else drives it: `/monitor`
+    /// starts and stops the refresh task through this, and the log
+    /// stream's own bus subscription redraws a sheep through the same
+    /// one. An `Arc<Monitor>` rather than an `Arc<Mutex<Monitor>>`:
+    /// [`Monitor`] takes `&self` throughout and does its own locking, per
+    /// sheep, precisely so that one slow Discord edit cannot stall every
+    /// other sheep behind it. See [`crate::bot::monitor`]'s module doc.
+    pub monitor: Arc<Monitor>,
 }
 
 /// One slash command: the payload that registers it and what runs when
@@ -125,13 +125,13 @@ pub trait Command: Send + Sync {
 /// Every slash command this dog answers, boxed so [`register`] and
 /// [`crate::bot::interaction::Handler`] can hold them in one collection.
 ///
-/// `/system` and `/shep` are the first two entries. Task 13 adds
-/// `/monitor`.
+/// `/system`, `/shep` and `/monitor`, the whole set this dog answers.
 #[must_use]
 pub fn registry() -> Vec<Box<dyn Command>> {
     vec![
         Box::new(crate::bot::commands::system::System),
         Box::new(crate::bot::commands::shep::ShepCommand),
+        Box::new(crate::bot::commands::monitor::MonitorCommand),
     ]
 }
 
@@ -221,14 +221,12 @@ mod tests {
         }
     }
 
-    /// `/system` and `/shep` are the first two commands this dog
-    /// registers. Task 13 adds `/monitor`; this pins that the registry
-    /// carries exactly the two commands built so far, rather than the two
-    /// generic tests above passing vacuously against an empty or
-    /// incomplete one.
+    /// The three commands this dog answers, pinned by name so the two
+    /// generic tests above cannot pass vacuously against an empty or
+    /// incomplete registry.
     #[test]
-    fn the_registry_carries_every_command_built_so_far() {
+    fn the_registry_carries_every_command_this_dog_answers() {
         let names: Vec<&'static str> = registry().iter().map(|c| c.name()).collect();
-        assert_eq!(names, vec!["system", "shep"]);
+        assert_eq!(names, vec!["system", "shep", "monitor"]);
     }
 }

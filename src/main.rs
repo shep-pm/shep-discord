@@ -305,6 +305,15 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // loop is the only caller of, and a static hides that state from every
     // test that would otherwise exercise it. See `session::warn_once`.
     let mut unresolved_warned = false;
+    // One monitor for the whole process, built before the loop so a
+    // reconnect or a config reread keeps the message ids it has already
+    // cached: losing them would make the next refresh post a second embed
+    // beside every one already in the channel. Shared with the gateway
+    // task through `bot::command::State`.
+    let monitor = Arc::new(bot::monitor::Monitor::new());
+    // The name cache the gateway, the monitor's own refresh and the log
+    // stream all read; owned here for the same reason `monitor` is.
+    let names = Arc::new(Mutex::new(Names::new()));
     // `Some` while the gateway task is running; see the doc above for why
     // it starts once rather than on every cycle. Cleared back to `None`
     // the cycle after the task finishes, panic or not, so a gateway that
@@ -376,7 +385,8 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         let state = bot::command::State {
                             live: Arc::clone(live),
                             config: Arc::clone(&config),
-                            names: Arc::new(Mutex::new(Names::new())),
+                            names: Arc::clone(&names),
+                            monitor: Arc::clone(&monitor),
                         };
                         gateway = Some(tokio::spawn(bot::run(
                             Arc::clone(&config),
