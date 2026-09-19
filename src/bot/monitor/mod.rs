@@ -32,9 +32,12 @@
 //! post; the second has to wait for the first and then see the id it
 //! wrote. That is what [`Monitor::guard_for`] hands out, and it is the
 //! best idea in either source repo (`monitor.ts:12`). It is deliberately
-//! not one lock over the whole monitor: held across a Discord round trip,
-//! a global lock would make a hundred sheep take a hundred serial edits,
-//! which is the stall this dog exists to avoid.
+//! not one lock over the whole monitor. A refresh does draw the flock one
+//! sheep at a time, so the serial edits happen either way; what a global
+//! lock would also do is stop a bus event redrawing sheep A while that
+//! refresh is midway through sheep B, and stop one failing sheep's round
+//! trip from holding up every other sheep's. A per-sheep guard is exactly
+//! as wide as the thing it protects, which is one sheep's own message.
 //!
 //! # What a failed edit does, and does not, do
 //!

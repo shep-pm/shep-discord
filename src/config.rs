@@ -104,10 +104,9 @@ impl fmt::Debug for Section {
 #[derive(PartialEq)]
 pub struct Config {
     // Read through this field by the derived `PartialEq::eq` above, which
-    // is why this carries no `#[allow(dead_code)]` the way `Section::token`
-    // does: the generated `eq` counts as a read for dead-code purposes
-    // whether or not anything calls it in a plain build, and nothing here
-    // does. The hand-written `Debug` below still redacts it rather than
+    // is why this needs no `#[allow(dead_code)]`: the generated `eq`
+    // counts as a read for dead-code purposes whether or not anything
+    // calls it in a plain build, and nothing here does. The hand-written `Debug` below still redacts it rather than
     // reading it, which is a decision about what a log line should show,
     // not evidence this field goes otherwise unread.
     pub token: String,

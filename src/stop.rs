@@ -13,7 +13,7 @@
 //! The run loop owns the signal. It turns ctrl-c into a request here, and
 //! watches the same request while it waits on the socket between requests.
 //!
-//! `main`'s run loop calls [`Stop::on_ctrl_c`] and [`Stop::wait`], so a
+//! [`crate::run::run`] calls [`Stop::on_ctrl_c`] and [`Stop::wait`], so a
 //! plain (non-test) build reaches everything here except [`Stop::requested`],
 //! which only this module's own tests call directly; the run loop learns a
 //! stop happened by `wait` resolving, not by polling it.
@@ -21,7 +21,8 @@
 //! # One request, two watchers
 //!
 //! Since the gateway came up, this process runs two concurrent loops
-//! (`main`'s own streaming loop and [`crate::bot::run`]'s gateway loop),
+//! ([`crate::run::run`]'s streaming loop and [`crate::bot::run`]'s gateway
+//! loop),
 //! and ctrl-c has to stop both rather than whichever happens to own the
 //! original [`Stop`]. [`Stop`] derives `Clone` for exactly that: it wraps a
 //! [`watch::Receiver`], which is already cheap to clone and already built
@@ -116,7 +117,7 @@ impl Request {
 
 /// Whether a wait ended in a stop request rather than the clock.
 ///
-/// Shared by `main`'s streaming loop and [`crate::bot::run`]'s gateway
+/// Shared by [`crate::run::run`]'s streaming loop and [`crate::bot::run`]'s gateway
 /// loop: both retry a failed cycle on the same fixed-interval-or-stop
 /// shape, so the outcome they both need to branch on is defined once here
 /// rather than once per loop.

@@ -1,6 +1,6 @@
 //! Starting one streaming session, and resolving the id it filters on.
 //!
-//! Split out of `main.rs`'s run loop rather than inlined there: resolving
+//! Split out of [`crate::run`]'s loop rather than inlined there: resolving
 //! `own_id` is its own small piece of reasoning, worth reading (and
 //! testing against a fake) apart from the reconnect and config-reread logic
 //! around it.
@@ -113,7 +113,7 @@ fn unresolved_message(name: &str) -> String {
 /// name's id unresolved. Streaming in that state, filtered against nothing
 /// because there is no id yet to filter against, is the exact bug this
 /// project exists to fix, so this dog does not stream this cycle at all.
-/// `main`'s own run loop already retries on a fixed interval, so returning
+/// [`crate::run::run`] already retries on a fixed interval, so returning
 /// here without error is enough to try again on the next pass rather than
 /// needing a retry loop of its own.
 ///
@@ -123,7 +123,7 @@ fn unresolved_message(name: &str) -> String {
 /// [`monitor::watch::Wired::on_process_event`].
 ///
 /// `unresolved_warned` is the warn-once state [`warn_once`] threads across
-/// calls: `main`'s own run loop owns it for the lifetime of the process, the
+/// calls: [`crate::run::run`] owns it for the lifetime of the process, the
 /// same way it owns `stop`, so a dog stuck unresolved prints exactly one
 /// line for the whole outage rather than one on every retry.
 ///

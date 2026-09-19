@@ -1,6 +1,6 @@
 //! `/monitor`: turn the live monitor on and off while the dog is running.
 //!
-//! Two subcommands and no options. `monitor_interval` in `dogs.toml` is
+//! Three subcommands and no options. `monitor_interval` in `dogs.toml` is
 //! what decides whether the monitor runs from boot; this command is the
 //! runtime override, and it says so in its own reply, because a setting an
 //! operator expects to persist and does not is worse than one that never
@@ -309,7 +309,7 @@ impl Command for MonitorCommand {
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
         Box::pin(async move {
             let options = interaction.data.options();
-            // Discord only ever sends one of the two subcommands `data`
+            // Discord only ever sends one of the three subcommands `data`
             // declares; anything else here is a bug in this file's own
             // registration, not a shape an operator can reach.
             let Some(sub) = options.first() else {

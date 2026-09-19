@@ -1,7 +1,7 @@
 //! The one flag this binary accepts, and the message it prints when handed
 //! anything else.
 //!
-//! Kept apart from [`crate::main`] and its run loop because this is a
+//! Kept apart from [`crate::main`] and [`crate::run`] because this is a
 //! different concern with a different reason to change: a new flag, or a
 //! change to what an existing one means, touches only what is in here.
 //! shep's own two probe flags, `--version` and `--schema`, are not part of

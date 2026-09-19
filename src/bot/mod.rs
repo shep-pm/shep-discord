@@ -44,8 +44,8 @@ const GATEWAY_RETRY_INTERVAL: core::time::Duration = core::time::Duration::from_
 /// Bring the gateway up, and keep it up, until `stop` resolves.
 ///
 /// A failed or dropped gateway connection is printed and retried on the
-/// next interval, on the same principle `main`'s own run loop already
-/// holds for the streaming side: nothing here is fatal except `stop`
+/// next interval, on the same principle [`crate::run::run`] already holds
+/// for the streaming side: nothing here is fatal except `stop`
 /// resolving, because the shepherd restarting underneath this dog, or
 /// Discord's own gateway dropping a shard, is ordinary rather than
 /// exceptional, and this half of the dog exiting for it would take the

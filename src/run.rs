@@ -175,12 +175,13 @@ fn refused(daemon_version: Option<&str>, message: &str) -> ExitCode {
 /// `dogs.toml` section.
 ///
 /// Fixed rather than read from `[discord]`, because nothing in that section
-/// governs this yet. Once the Discord client and the shepherd's own event
-/// bus are wired into this loop it stops polling on a timer at all,
-/// waiting on those instead; thirty seconds is short enough that a
-/// handshake refused after the fact is noticed promptly and long enough
-/// not to ask the shepherd for a section nothing yet acts on many times a
-/// second.
+/// governs this. The Discord gateway and the shepherd's own event bus are
+/// both wired in now, and both are waited on rather than polled, but this
+/// loop still wakes on the timer: rereading `dogs.toml` is what it is for,
+/// and the shepherd announces a config change on no topic this dog
+/// subscribes to. Thirty seconds is short enough that a handshake refused
+/// after the fact, or an edited config, is noticed promptly, and long
+/// enough not to ask the shepherd for a section many times a second.
 pub const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// The run loop.

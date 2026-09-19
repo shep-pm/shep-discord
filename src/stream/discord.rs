@@ -8,7 +8,8 @@
 //! CacheHttp for &T` just above it) is what makes `&Http` acceptable
 //! wherever [`serenity::model::id::ChannelId::send_message`] asks for
 //! `impl CacheHttp`. Nothing here builds a [`serenity::Client`] or opens a
-//! gateway; that is Task 11's job, once slash commands need one.
+//! gateway; the slash command side of this dog does that, in
+//! [`crate::bot::run`].
 
 use core::fmt;
 
