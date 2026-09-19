@@ -17,7 +17,10 @@ use tokio::sync::mpsc;
 use crate::{
     bot::channel::{Board, Posted, RECENT_MESSAGE_LIMIT},
     error::Error,
-    limits::EMBED_TITLE_LIMIT,
+    limits::{
+        AUTOCOMPLETE_CHOICE_NAME_LIMIT, COMMAND_DESCRIPTION_LIMIT, COMMAND_NAME_LIMIT,
+        EMBED_TITLE_LIMIT, OPTION_DESCRIPTION_LIMIT, OPTION_NAME_LIMIT,
+    },
     shepherd::Live,
 };
 
@@ -53,6 +56,69 @@ pub fn assert_no_dashes_deep(value: &serde_json::Value) {
         serde_json::Value::Object(fields) => fields.values().for_each(assert_no_dashes_deep),
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
     }
+}
+
+/// Assert every string in one command's serialized registration payload
+/// is inside the cap Discord applies to it, at every nesting depth.
+///
+/// The same walk [`assert_no_dashes_deep`] makes and a different
+/// predicate, and for the same reason: a check that reads the top level
+/// only was already caught missing a nested subcommand's description
+/// once. Depth matters more here, because the string most likely to grow
+/// past its cap is an option description four levels down, and the
+/// payload is all or nothing.
+///
+/// Asserted rather than fitted. See [`crate::limits`]'s module doc for
+/// why these four caps are the one group in this crate that must never be
+/// truncated: a cut sheep name is cosmetic, a cut command description is
+/// a lie in Discord's UI, and these strings come from whoever edits this
+/// crate rather than from an operator.
+#[track_caller]
+pub fn assert_registration_lengths(command: &serde_json::Value) {
+    within(command, "name", COMMAND_NAME_LIMIT);
+    within(command, "description", COMMAND_DESCRIPTION_LIMIT);
+    assert_option_lengths(command);
+}
+
+/// Every option under `node`, and every option under those: a subcommand
+/// carries its own options, and Discord caps each of them the same way
+/// whatever depth it sits at.
+#[track_caller]
+fn assert_option_lengths(node: &serde_json::Value) {
+    let Some(options) = node.get("options").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    for option in options {
+        within(option, "name", OPTION_NAME_LIMIT);
+        within(option, "description", OPTION_DESCRIPTION_LIMIT);
+        // Static choices, which nothing in this crate declares today:
+        // `/shep` suggests names through autocomplete instead. Covered
+        // anyway so that adding one is not a silent gap, and covered at
+        // the same hundred characters Discord caps an autocomplete
+        // choice's name at.
+        if let Some(choices) = option.get("choices").and_then(serde_json::Value::as_array) {
+            for choice in choices {
+                within(choice, "name", AUTOCOMPLETE_CHOICE_NAME_LIMIT);
+            }
+        }
+        assert_option_lengths(option);
+    }
+}
+
+/// Assert one named string field is at most `limit` characters, counting
+/// characters rather than bytes the way Discord does.
+#[track_caller]
+fn within(node: &serde_json::Value, field: &str, limit: usize) {
+    let Some(text) = node.get(field).and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    let length = text.chars().count();
+    assert!(
+        length <= limit,
+        "{field} is {length} characters, over Discord's {limit}: {text:?}. The whole \
+         registration payload is refused for one string over its cap, so this would take every \
+         command in this dog out of the guild at once."
+    );
 }
 
 /// A [`Board`] that records what the monitor asked it to do and reaches no

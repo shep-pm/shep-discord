@@ -240,6 +240,24 @@ mod tests {
         }
     }
 
+    /// Every string Discord caps in a registration payload is inside its
+    /// cap, for every command, at every depth.
+    ///
+    /// The tenth Discord limit this port has met and the only one whose
+    /// failure is total: `set_commands` sends all three commands in one
+    /// payload, so a single description one character too long is a 400
+    /// for the lot, and `register` prints one stderr line while every
+    /// command silently disappears from the guild. Swept over
+    /// [`registry`] rather than asserted per command, so a fourth command
+    /// is covered the day it is added.
+    #[test]
+    fn no_registered_command_exceeds_a_registration_cap() {
+        for command in registry() {
+            let json = serde_json::to_value(command.data()).expect("json");
+            crate::test_support::assert_registration_lengths(&json);
+        }
+    }
+
     /// The three commands this dog answers, pinned by name so the two
     /// generic tests above cannot pass vacuously against an empty or
     /// incomplete registry.

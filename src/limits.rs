@@ -29,10 +29,36 @@
 //!   `/shep` since nothing else in this crate offers suggestions.
 //! - [`AUTOCOMPLETE_CHOICE_NAME_LIMIT`], the one case in this file where
 //!   cutting a string is the wrong answer; see its own doc comment.
+//! - The four slash command registration caps, [`COMMAND_NAME_LIMIT`],
+//!   [`COMMAND_DESCRIPTION_LIMIT`], [`OPTION_NAME_LIMIT`] and
+//!   [`OPTION_DESCRIPTION_LIMIT`], which apply at every nesting depth.
+//!   These have the worst failure mode of the ten and are the only ones
+//!   [`fit`] must NOT be used on; both halves of that are argued below.
 //!
-//! Nine encounters with one class of bug is a missing abstraction, not
-//! nine unrelated ones, so the caps live here once and [`fit`] is the one
+//! Ten encounters with one class of bug is a missing abstraction, not ten
+//! unrelated ones, so the caps live here once and [`fit`] is the one
 //! place a string gets cut down to one of them.
+//!
+//! # Why the registration caps are the dangerous ones
+//!
+//! Every other limit here spoils one message. These four take the whole
+//! bot's command surface out of a guild at once.
+//!
+//! `GuildId::set_commands` sends every command in one payload, so one
+//! description a character too long is a 400 for all of them.
+//! [`crate::bot::command::register`] prints one line to stderr and
+//! carries on; the gateway stays up, log streaming and the monitor keep
+//! working, and nothing looks broken. Meanwhile `/shep`, `/system` and
+//! `/monitor` have all silently vanished from the guild, and one
+//! over-long option description on one subcommand is enough to do it.
+//!
+//! So these are asserted rather than fitted, which is the opposite of
+//! every other cap in this file. A truncated sheep name is a cosmetic
+//! loss in a message somebody is reading; a truncated command
+//! description is a permanent lie in Discord's own UI about what a
+//! command does. These strings are written by whoever edits this crate,
+//! not supplied by an operator, so the right place to catch one is a
+//! failing test before it ships.
 //!
 //! `custom_id`'s own 100 character cap stays where it is, in
 //! [`crate::bot::embed`]: nothing there needs truncating, since
@@ -87,6 +113,46 @@ pub const EMBED_MAX_COUNT: usize = 10;
 /// would fail the whole response and silently empty every suggestion for
 /// that keystroke, not just the one that was too long.
 pub const AUTOCOMPLETE_CHOICE_NAME_LIMIT: usize = 100;
+
+/// The longest a slash command's `name` may be. Discord's own limit, and
+/// the same cap an option's name carries; see [`OPTION_NAME_LIMIT`] for
+/// why the two are named separately anyway.
+#[allow(
+    dead_code,
+    reason = "read by test_support::assert_registration_lengths, which is the only enforcement these four can have: no shipped code path may fit or truncate a registration string, per this module's own doc, so a test is where they are checked"
+)]
+pub const COMMAND_NAME_LIMIT: usize = 32;
+
+/// The longest a slash command's `description` may be. Discord's own
+/// limit.
+#[allow(
+    dead_code,
+    reason = "read by test_support::assert_registration_lengths, which is the only enforcement these four can have: no shipped code path may fit or truncate a registration string, per this module's own doc, so a test is where they are checked"
+)]
+pub const COMMAND_DESCRIPTION_LIMIT: usize = 100;
+
+/// The longest a command option's `name` may be, at any nesting depth: a
+/// subcommand's own name and the name of an option under it are both
+/// options as far as Discord's payload is concerned.
+///
+/// Numerically the same as [`COMMAND_NAME_LIMIT`] and named separately on
+/// purpose. They are two limits that happen to agree, not one limit used
+/// twice, and a reader checking one of them against Discord's
+/// documentation should not have to work out which.
+#[allow(
+    dead_code,
+    reason = "read by test_support::assert_registration_lengths, which is the only enforcement these four can have: no shipped code path may fit or truncate a registration string, per this module's own doc, so a test is where they are checked"
+)]
+pub const OPTION_NAME_LIMIT: usize = 32;
+
+/// The longest a command option's `description` may be, at any nesting
+/// depth. Discord's own limit, and the one this crate comes closest to:
+/// the longest description in the tree today is 70 characters.
+#[allow(
+    dead_code,
+    reason = "read by test_support::assert_registration_lengths, which is the only enforcement these four can have: no shipped code path may fit or truncate a registration string, per this module's own doc, so a test is where they are checked"
+)]
+pub const OPTION_DESCRIPTION_LIMIT: usize = 100;
 
 /// The longest a message's own `content` field may be, separate from
 /// anything an embed carries. Discord's own limit, and the sixth of its
