@@ -15,8 +15,8 @@ use core::future::Future;
 use std::pin::Pin;
 
 use serenity::all::{
-    CommandInteraction, CommandOptionType, ComponentInteraction, Context, CreateCommand,
-    CreateCommandOption, CreateInteractionResponseFollowup, Permissions,
+    CommandInteraction, ComponentInteraction, Context, CreateCommand,
+    CreateInteractionResponseFollowup, Permissions,
 };
 use shep_client::shep_core::{protocol::SelectorSpec, values::UpDuration};
 
@@ -24,6 +24,7 @@ use crate::{
     bot::{
         channel,
         command::{Command, State},
+        commands::bare_subcommand,
         embed::parse_custom_id,
         monitor::refresh::{self, Refresh},
     },
@@ -127,11 +128,6 @@ fn redrew_reply(count: usize) -> String {
 fn no_channel_message() -> &'static str {
     "No monitor_channel is set in the [discord] section of dogs.toml, so there is nowhere to \
      draw the monitor."
-}
-
-/// One subcommand that takes no options at all. Both of them do.
-fn bare_subcommand(name: &str, description: &str) -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommand, name, description)
 }
 
 impl MonitorCommand {

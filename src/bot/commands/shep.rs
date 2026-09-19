@@ -64,6 +64,7 @@ use shep_client::shep_core::protocol::{ProcessInfo, SelectorSpec};
 use crate::{
     bot::{
         command::{Command, State},
+        commands::bare_subcommand,
         embed,
     },
     error::Error,
@@ -122,11 +123,6 @@ fn optional_name_option() -> CreateCommandOption {
 fn verb_subcommand(name: &str, description: &str) -> CreateCommandOption {
     CreateCommandOption::new(CommandOptionType::SubCommand, name, description)
         .add_sub_option(name_option())
-}
-
-/// One subcommand that takes no options at all: `list` and `save`.
-fn bare_subcommand(name: &str, description: &str) -> CreateCommandOption {
-    CreateCommandOption::new(CommandOptionType::SubCommand, name, description)
 }
 
 /// The stderr line printed when Discord refused an autocomplete

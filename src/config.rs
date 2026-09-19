@@ -198,12 +198,12 @@ impl Config {
         let token = section
             .token
             .ok_or_else(|| Error::Config("token is required".to_owned()))?;
-        let guild_id = section
-            .guild_id
+        // Through `refuse_zero` like the three channels rather than
+        // hand-rolled: one rule, one wording. The order still reads
+        // "must not be 0" for a written `0` and "is required" for an
+        // absent key, since a `Some(0)` never reaches the second step.
+        let guild_id = refuse_zero(section.guild_id, "guild_id")?
             .ok_or_else(|| Error::Config("guild_id is required".to_owned()))?;
-        if guild_id == 0 {
-            return Err(Error::Config("guild_id must not be 0".to_owned()));
-        }
         let monitor_channel = refuse_zero(section.monitor_channel, "monitor_channel")?;
         let log_channel = refuse_zero(section.log_channel, "log_channel")?;
         let err_channel = refuse_zero(section.err_channel, "err_channel")?;
