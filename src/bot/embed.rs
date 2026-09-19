@@ -573,25 +573,7 @@ mod tests {
     /// the embed first just to learn its size.
     #[test]
     fn embed_character_count_matches_the_built_embeds_own_json() {
-        let worst = ProcessInfo::builder(
-            u32::MAX,
-            "a".repeat(EMBED_TITLE_LIMIT + 50),
-            ProcStatus::Online,
-        )
-        .pid(Some(u32::MAX))
-        .restarts(u32::MAX)
-        .uptime_ms(u64::MAX)
-        .cpu_percent(Some(f32::MIN))
-        .memory_bytes(Some(u64::MAX))
-        .instance(Some(u32::MAX))
-        .lambs(Some(vec![Lamb::new(u32::MAX, "x".repeat(2_000))]))
-        .fold(Some("f".repeat(2_000)))
-        .smit(Some("s".repeat(2_000)))
-        .dog(Some(DogSource::Adopted {
-            path: "p".repeat(2_000),
-        }))
-        .dog_stale(Some(true))
-        .build();
+        let worst = crate::test_support::worst_case_sample(u32::MAX);
 
         let json = serde_json::to_value(process_embed(&worst)).expect("json");
         let title_len = json["title"].as_str().expect("title").chars().count();

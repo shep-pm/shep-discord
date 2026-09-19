@@ -500,18 +500,17 @@ mod tests {
         assert_eq!(reply_content("started web"), "started web");
     }
 
-    /// The thing this task must not get wrong: [`crate::limits::MESSAGE_CHARACTER_BUDGET`]
-    /// is a sum across every embed on one message, and Discord separately
-    /// caps one message at [`crate::limits::EMBED_MAX_COUNT`] embeds. A
-    /// flock of thirty sheep already exceeds the count cap on its own
-    /// (thirty over ten is three groups at least), so this proves both
-    /// halves of `answer_list`'s own packing rather than only the one the
-    /// count cap would hide: every group's summed
-    /// [`embed::embed_character_count`] also stays at or under the
-    /// character budget, and every sheep handed in comes back out exactly
-    /// once.
+    /// Discord caps one message at [`crate::limits::EMBED_MAX_COUNT`]
+    /// embeds, independently of the character sum. Thirty bare
+    /// `sample_numbered` sheep cost only a few hundred characters apiece,
+    /// nowhere near [`crate::limits::MESSAGE_CHARACTER_BUDGET`], so every
+    /// split this test forces comes from the count cap alone; a broken
+    /// character-summing branch in `pack_by_budget` would not be caught
+    /// here. See [`two_worst_case_sheep_exceed_the_character_budget`] for
+    /// the half of the same proof that drives a split through the
+    /// character budget instead, with the count cap nowhere near reached.
     #[test]
-    fn thirty_sheep_do_not_fit_one_message() {
+    fn thirty_sheep_exceed_the_embed_count_cap() {
         let flock: Vec<ProcessInfo> = (0..30).map(sample_numbered).collect();
         let groups = pack_by_budget(
             flock,
@@ -532,6 +531,44 @@ mod tests {
             seen += group.len();
         }
         assert_eq!(seen, 30, "a sheep was lost or duplicated while packing");
+    }
+
+    /// The thing this task must not get wrong, and the half of the proof
+    /// [`thirty_sheep_exceed_the_embed_count_cap`] does not touch: two
+    /// sheep at [`crate::test_support::worst_case_sample`]'s own worst
+    /// case (about 4,566 characters each, `process_embed`'s own doc
+    /// comment) sum to roughly 9,132, over
+    /// [`crate::limits::MESSAGE_CHARACTER_BUDGET`]'s 6,000 while sitting
+    /// at two embeds, far under [`crate::limits::EMBED_MAX_COUNT`]'s ten.
+    /// A packer whose character-summing branch were broken outright would
+    /// still pass the count-cap test above, since that split never
+    /// depends on it; this is the test that actually touches the boundary
+    /// the character budget names.
+    #[test]
+    fn two_worst_case_sheep_exceed_the_character_budget() {
+        let flock = vec![
+            crate::test_support::worst_case_sample(1),
+            crate::test_support::worst_case_sample(2),
+        ];
+        let groups = pack_by_budget(
+            flock,
+            limits::MESSAGE_CHARACTER_BUDGET,
+            limits::EMBED_MAX_COUNT,
+            embed::embed_character_count,
+        );
+
+        assert_eq!(groups.len(), 2, "two worst-case sheep shared one message");
+        let mut seen = 0;
+        for group in &groups {
+            assert_eq!(group.len(), 1, "a worst-case sheep shared its message");
+            let total: usize = group.iter().map(embed::embed_character_count).sum();
+            assert!(
+                total <= limits::MESSAGE_CHARACTER_BUDGET,
+                "{total} over the message budget"
+            );
+            seen += group.len();
+        }
+        assert_eq!(seen, 2, "a sheep was lost or duplicated while packing");
     }
 
     /// One sheep, named `sheep-<id>`, distinct per `id` so a packing test

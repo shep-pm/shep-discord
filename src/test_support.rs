@@ -6,14 +6,14 @@ use std::sync::{Arc, Mutex};
 use shep_client::{
     ReconnectingClient,
     shep_core::{
-        protocol::{DogSource, Envelope, ProcessInfo, Request, Response},
+        protocol::{DogSource, Envelope, Lamb, ProcessInfo, Request, Response},
         status::ProcStatus,
     },
     testing,
 };
 use tokio::sync::mpsc;
 
-use crate::shepherd::Live;
+use crate::{limits::EMBED_TITLE_LIMIT, shepherd::Live};
 
 /// Assert `text` carries neither an em dash nor an en dash.
 ///
@@ -136,5 +136,34 @@ pub fn sample(name: &str) -> ProcessInfo {
 pub fn dog_sample(name: &str) -> ProcessInfo {
     ProcessInfo::builder(0, name, ProcStatus::Online)
         .dog(Some(DogSource::BuiltIn))
+        .build()
+}
+
+/// One sheep at the worst-case character width [`crate::bot::embed::embed_character_count`]
+/// can produce: title truncated to [`EMBED_TITLE_LIMIT`], and every other
+/// field at its own widest form. `id` is the only thing that varies
+/// between calls, so a test building several of these to prove a packing
+/// decision can also prove none of them was lost or duplicated.
+///
+/// Shared rather than built by hand in each test that needs it:
+/// `bot::embed`'s own `embed_character_count_matches_the_built_embeds_own_json`
+/// and `bot::commands::shep`'s packing tests both need the exact same
+/// worst case, and a second hand-built copy of thirteen field values is
+/// exactly the kind of drift this crate's own review keeps finding.
+pub fn worst_case_sample(id: u32) -> ProcessInfo {
+    ProcessInfo::builder(id, "a".repeat(EMBED_TITLE_LIMIT + 50), ProcStatus::Online)
+        .pid(Some(u32::MAX))
+        .restarts(u32::MAX)
+        .uptime_ms(u64::MAX)
+        .cpu_percent(Some(f32::MIN))
+        .memory_bytes(Some(u64::MAX))
+        .instance(Some(u32::MAX))
+        .lambs(Some(vec![Lamb::new(u32::MAX, "x".repeat(2_000))]))
+        .fold(Some("f".repeat(2_000)))
+        .smit(Some("s".repeat(2_000)))
+        .dog(Some(DogSource::Adopted {
+            path: "p".repeat(2_000),
+        }))
+        .dog_stale(Some(true))
         .build()
 }
