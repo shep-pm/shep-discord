@@ -49,7 +49,7 @@ use shep_client::{
 
 use crate::error::Error;
 
-/// A PM2-shaped verb, as a Discord command will eventually name one.
+/// A PM2-shaped verb, as `/shep` names one.
 ///
 /// One entry per operational request the shepherd answers,
 /// [`Request::Flush`] included: this enum and [`Live::act`] are the only
