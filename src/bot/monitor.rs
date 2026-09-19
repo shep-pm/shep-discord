@@ -63,8 +63,9 @@ use crate::{
 /// Which message in the monitor channel belongs to which sheep, and the
 /// interval task keeping them current.
 pub struct Monitor {
-    /// The sheep id to message id map, the whole point of this type.
-    messages: Mutex<HashMap<u32, MessageId>>,
+    /// What the monitor remembers about each sheep it has drawn or
+    /// removed, the whole point of this type.
+    messages: Mutex<HashMap<u32, Slot>>,
     /// One lock per sheep, held across that sheep's own Discord call so a
     /// second update for it waits rather than posting a second message.
     /// See [`Monitor::guard_for`].
@@ -72,6 +73,20 @@ pub struct Monitor {
     /// The refresh task, while one is running. `None` before the first
     /// start and after a stop.
     task: Mutex<Option<Running>>,
+}
+
+/// What the monitor remembers about one sheep.
+///
+/// The forget count is what makes a refresh safe to run against a
+/// snapshot that may already be out of date; see [`Monitor::draw`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Slot {
+    /// The message drawn for this sheep, while it has one.
+    message: Option<MessageId>,
+    /// How many times this sheep's message has been forgotten. Only ever
+    /// compared against an earlier reading of itself, never interpreted,
+    /// so wrapping is not a concern at one increment per delete.
+    forgets: u64,
 }
 
 /// A running refresh task and the handle that ends it.
@@ -145,8 +160,49 @@ impl Monitor {
     pub fn adopt(&self, found: HashMap<u32, MessageId>) {
         let mut messages = self.messages.lock().expect("not poisoned");
         for (sheep, message) in found {
-            messages.entry(sheep).or_insert(message);
+            messages
+                .entry(sheep)
+                .or_default()
+                .message
+                .get_or_insert(message);
         }
+    }
+
+    /// How many times each sheep has been forgotten, as of right now.
+    ///
+    /// Read before a refresh takes its own muster-roll snapshot, and
+    /// carried through to every [`Monitor::draw`] that snapshot feeds, so
+    /// a sheep deleted while the refresh is in flight can be told apart
+    /// from one that was never drawn. See [`Monitor::draw`] for the race
+    /// this closes.
+    fn forget_marks(&self) -> HashMap<u32, u64> {
+        self.messages
+            .lock()
+            .expect("not poisoned")
+            .iter()
+            .map(|(sheep, slot)| (*sheep, slot.forgets))
+            .collect()
+    }
+
+    /// One sheep's forget count, for a caller acting on a fact about that
+    /// sheep alone rather than on a whole-flock snapshot.
+    fn forget_mark(&self, id: u32) -> u64 {
+        self.messages
+            .lock()
+            .expect("not poisoned")
+            .get(&id)
+            .map_or(0, |slot| slot.forgets)
+    }
+
+    /// Every sheep that currently has a message drawn for it.
+    fn drawn(&self) -> Vec<u32> {
+        self.messages
+            .lock()
+            .expect("not poisoned")
+            .iter()
+            .filter(|(_, slot)| slot.message.is_some())
+            .map(|(sheep, _)| *sheep)
+            .collect()
     }
 
     /// The lock for one sheep, shared by everything that draws or removes
@@ -176,34 +232,73 @@ impl Monitor {
     /// Draw `info` in the monitor channel: edit the message this sheep
     /// already has, or post its first one.
     ///
-    /// The sheep's own guard is taken BEFORE the cache is read, and that
-    /// order is the whole correctness argument: a second concurrent call
-    /// for the same sheep cannot read the cache until the first has
-    /// finished writing the id it posted, so it finds that id and edits.
+    /// Reads the sheep's forget count immediately, so this is the entry
+    /// point for a caller holding a fact about one sheep that is true
+    /// now, such as a bus event. [`Monitor::update_all`] reads its counts
+    /// once, before its own muster-roll snapshot, and calls
+    /// [`Monitor::draw`] with those instead.
     ///
     /// # Errors
     /// [`Error::Discord`] when Discord refuses the post or the edit.
     pub async fn update_one<B: Board>(&self, board: &B, info: &ProcessInfo) -> Result<(), Error> {
+        self.draw(board, info, self.forget_mark(info.id)).await
+    }
+
+    /// Draw `info`, unless the sheep has been forgotten since `mark` was
+    /// read.
+    ///
+    /// The sheep's own guard is taken BEFORE the cache is read, and that
+    /// order is half the correctness argument: a second concurrent call
+    /// for the same sheep cannot read the cache until the first has
+    /// finished writing the id it posted, so it finds that id and edits.
+    ///
+    /// `mark` is the other half, and it closes a race the guard cannot.
+    /// The guard serialises two calls correctly, but neither one knows
+    /// its own INPUT was already stale. A refresh reads the flock once
+    /// and then draws each sheep in turn; if a `process.delete` for one
+    /// of them runs to completion in that gap, this function would find
+    /// an empty cache and post a fresh message for a sheep that no longer
+    /// exists, which nothing would ever clean up until the next refresh.
+    /// The forget count says so without another Discord round trip:
+    /// `forget` bumps it, so a count that has moved since `mark` was read
+    /// means the caller's snapshot predates a delete, and the post is
+    /// skipped. Re-reading the sheep from the shepherd would answer the
+    /// same question and would turn one refresh into one request per
+    /// sheep.
+    ///
+    /// Skipping is always safe, never lossy: a sheep that does still
+    /// exist is drawn by the next refresh, from a snapshot that includes
+    /// the delete this one missed. An edit is not skipped, since a
+    /// message that exists is worth correcting whatever happened around
+    /// it.
+    ///
+    /// # Errors
+    /// [`Error::Discord`] when Discord refuses the post or the edit.
+    async fn draw<B: Board>(&self, board: &B, info: &ProcessInfo, mark: u64) -> Result<(), Error> {
         let guard = self.guard_for(info.id);
         let _in_flight = guard.lock().await;
 
-        let existing = self
+        let slot = self
             .messages
             .lock()
             .expect("not poisoned")
             .get(&info.id)
-            .copied();
+            .copied()
+            .unwrap_or_default();
 
         let embed = embed::process_embed(info);
         let buttons = embed::process_buttons(info);
-        match existing {
+        match slot.message {
             Some(message) => board.edit(message, embed, buttons).await,
+            None if slot.forgets != mark => Ok(()),
             None => {
                 let message = board.post(embed, buttons).await?;
                 self.messages
                     .lock()
                     .expect("not poisoned")
-                    .insert(info.id, message);
+                    .entry(info.id)
+                    .or_default()
+                    .message = Some(message);
                 Ok(())
             }
         }
@@ -226,7 +321,12 @@ impl Monitor {
         let guard = self.guard_for(id);
         let _in_flight = guard.lock().await;
 
-        let existing = self.messages.lock().expect("not poisoned").remove(&id);
+        let existing = {
+            let mut messages = self.messages.lock().expect("not poisoned");
+            let slot = messages.entry(id).or_default();
+            slot.forgets += 1;
+            slot.message.take()
+        };
         if let Some(message) = existing
             && let Err(err) = board.delete(message).await
         {
@@ -246,6 +346,13 @@ impl Monitor {
     /// shared with the log stream, and a cache missing the dogs would
     /// render their lines under a placeholder.
     ///
+    /// Both the forget counts and the set of sheep already drawn are read
+    /// BEFORE the muster roll, so everything this function decides is
+    /// measured against the same moment. A sheep first drawn after that
+    /// moment, by a bus event this refresh could not have seen, is
+    /// neither redrawn nor swept away as departed; the next refresh sees
+    /// it in its own snapshot.
+    ///
     /// # Errors
     /// Whatever [`Live::flock`] could not answer. Nothing after that read
     /// is fatal.
@@ -256,6 +363,8 @@ impl Monitor {
         names: &Mutex<Names>,
         ignore_dogs: bool,
     ) -> Result<(), Error> {
+        let marks = self.forget_marks();
+        let already_drawn = self.drawn();
         let roll = live.flock().await?;
         names.lock().expect("not poisoned").refresh(&roll);
 
@@ -266,23 +375,30 @@ impl Monitor {
         };
 
         for info in &drawn {
-            if let Err(err) = self.update_one(board, info).await {
+            let mark = marks.get(&info.id).copied().unwrap_or_default();
+            if let Err(err) = self.draw(board, info, mark).await {
                 eprintln!("shep-discord: {err}");
             }
         }
 
-        let cached: Vec<u32> = self
-            .messages
-            .lock()
-            .expect("not poisoned")
-            .keys()
-            .copied()
-            .collect();
         let present: Vec<u32> = drawn.iter().map(|info| info.id).collect();
-        for id in departed(&cached, &present) {
+        self.sweep(board, &already_drawn, &present).await;
+        Ok(())
+    }
+
+    /// Delete the message of every sheep in `already_drawn` that the
+    /// flock no longer holds.
+    ///
+    /// `already_drawn` is the caller's own list, read before it asked for
+    /// the muster roll, and not the cache as it stands now. That is the
+    /// whole point of the parameter: a sheep first drawn by a bus event
+    /// while the refresh was in flight is in the cache but not in either
+    /// of the refresh's own two readings, and sweeping against the live
+    /// cache would delete the message that event just posted.
+    async fn sweep<B: Board>(&self, board: &B, already_drawn: &[u32], present: &[u32]) {
+        for id in departed(already_drawn, present) {
             self.forget(board, id).await;
         }
-        Ok(())
     }
 
     /// Whether a refresh task is running right now.
@@ -323,12 +439,16 @@ impl Default for Monitor {
     }
 }
 
-/// Which cached sheep are no longer in the flock, sorted.
+/// Which of the sheep already drawn are no longer in the flock, sorted.
 ///
 /// A pure function of two id lists rather than a loop inside
 /// [`Monitor::update_all`]: it is the decision that deletes a message, so
 /// it is worth being able to exercise on its own. Sorted so a caller's
 /// behaviour does not depend on a `HashMap`'s iteration order.
+///
+/// `cached` is read before the flock snapshot rather than after the
+/// drawing loop, so a message posted by a bus event partway through a
+/// refresh is not mistaken for one belonging to a departed sheep.
 fn departed(cached: &[u32], present: &[u32]) -> Vec<u32> {
     let mut gone: Vec<u32> = cached
         .iter()
@@ -611,6 +731,87 @@ mod tests {
             .await
             .expect("ok");
         assert_eq!((sink.sends(), sink.edits()), (0, 1));
+    }
+
+    /// The race the forget count exists for, with the interleaving
+    /// forced rather than hoped for: a refresh reads the flock, a
+    /// `process.delete` for one of those sheep runs to completion in the
+    /// gap, and the refresh then reaches that sheep carrying a snapshot
+    /// that predates the delete. Posting there would leave a message for
+    /// a sheep that no longer exists, and nothing would clean it up until
+    /// the next refresh.
+    ///
+    /// Driven through [`Monitor::draw`] with the mark a refresh would
+    /// have captured, rather than through two concurrent tasks: the
+    /// ordering that matters is "the delete finished first", and
+    /// scheduling two futures to land that way every time is a flakier
+    /// test of a weaker claim.
+    #[tokio::test]
+    async fn a_delete_that_lands_after_the_snapshot_is_not_undone_by_the_refresh() {
+        let monitor = Monitor::new();
+        let sink = CountingChannel::new();
+        let web = info(1, "web");
+        monitor.update_one(&sink, &web).await.expect("ok");
+
+        // What `update_all` reads before it asks for the muster roll.
+        let marks = monitor.forget_marks();
+
+        // The event loop's own `process.delete`, start to finish.
+        monitor.forget(&sink, 1).await;
+
+        // The refresh loop now reaches sheep 1, still holding its
+        // snapshot from before the delete.
+        monitor
+            .draw(&sink, &web, marks.get(&1).copied().unwrap_or_default())
+            .await
+            .expect("ok");
+
+        assert_eq!(
+            (sink.sends(), sink.deletes()),
+            (1, 1),
+            "the deleted sheep must not be posted a second time"
+        );
+    }
+
+    /// The same path with a mark read after the delete rather than
+    /// before: a sheep that really was recreated is drawn again, so the
+    /// check above skips a stale snapshot rather than skipping every
+    /// sheep that has ever been forgotten.
+    #[tokio::test]
+    async fn a_sheep_drawn_from_a_current_snapshot_is_still_posted() {
+        let monitor = Monitor::new();
+        let sink = CountingChannel::new();
+        let web = info(1, "web");
+        monitor.update_one(&sink, &web).await.expect("ok");
+        monitor.forget(&sink, 1).await;
+
+        monitor.update_one(&sink, &web).await.expect("ok");
+
+        assert_eq!((sink.sends(), sink.deletes()), (2, 1));
+    }
+
+    /// The mirror of the same staleness, on the deleting side: a sheep
+    /// first drawn by a bus event while a refresh was in flight is in the
+    /// cache but in neither of that refresh's own readings, and must not
+    /// be swept away as departed. Driven through [`Monitor::sweep`] with
+    /// the empty list a refresh that started before sheep 2 existed would
+    /// have captured.
+    #[tokio::test]
+    async fn a_sheep_drawn_after_the_snapshot_is_not_swept_away() {
+        let monitor = Monitor::new();
+        let sink = CountingChannel::new();
+        monitor
+            .update_one(&sink, &info(2, "api"))
+            .await
+            .expect("ok");
+
+        monitor.sweep(&sink, &[], &[]).await;
+
+        assert_eq!(
+            sink.deletes(),
+            0,
+            "sheep 2 was drawn after this refresh's own snapshot"
+        );
     }
 
     #[test]
