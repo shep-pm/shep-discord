@@ -55,12 +55,6 @@ use crate::error::Error;
 /// [`Request::Flush`] included: this enum and [`Live::act`] are the only
 /// place that variant is built, so a `Request::Flush` anywhere else in this
 /// crate is a review finding on sight.
-// Matched only by `Live::act`, which nothing in a plain build calls yet:
-// the Discord command that names a verb is a later task.
-#[allow(
-    dead_code,
-    reason = "matched by Live::act, unreached from main until a later task wires a Discord command to it"
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
     /// Restart what is already registered. See the module doc for why this
@@ -203,10 +197,6 @@ impl Live {
     ///
     /// # Errors
     /// As [`Self::section`].
-    #[allow(
-        dead_code,
-        reason = "called by a Discord command, which is a later task"
-    )]
     pub async fn act(&self, verb: Verb, selector: SelectorSpec) -> Result<String, Error> {
         match verb {
             Verb::Start => self.restart(selector, "started").await,
@@ -251,7 +241,6 @@ impl Live {
     /// [`Verb::Start`] and [`Verb::Restart`] both ask [`Request::Restart`]
     /// and differ only in the word the reply uses: see the module doc for
     /// why `Start` does not ask `Request::Start`.
-    #[allow(dead_code, reason = "called only by Live::act, see its own allow")]
     async fn restart(&self, selector: SelectorSpec, verb_word: &str) -> Result<String, Error> {
         match self.0.request(Request::Restart { selector }).await? {
             Response::Restarted { accepted, refused } => Ok(walked(verb_word, &accepted, &refused)),
@@ -311,7 +300,6 @@ fn named(response: &Response) -> String {
 /// Naming only the accepted set would hide a refusal from the one place an
 /// operator would see it, so the sentence names both once `refused` is not
 /// empty.
-#[allow(dead_code, reason = "called only by Live::act, see its own allow")]
 fn walked(verb_word: &str, accepted: &[ProcessInfo], refused: &[SheepRefusal]) -> String {
     let names = name_list(accepted);
     if refused.is_empty() {
@@ -326,10 +314,6 @@ fn walked(verb_word: &str, accepted: &[ProcessInfo], refused: &[SheepRefusal]) -
 }
 
 /// A comma-joined list of sheep names, for a reply sentence.
-#[allow(
-    dead_code,
-    reason = "called only by Live::act and walked, see their own allows"
-)]
 fn name_list(sheep: &[ProcessInfo]) -> String {
     if sheep.is_empty() {
         return "no sheep".to_owned();
@@ -344,7 +328,6 @@ fn name_list(sheep: &[ProcessInfo]) -> String {
 /// A human phrase for what a selector asked for, used only where the
 /// shepherd's own reply carries no name to report instead: [`Request::Delete`]
 /// answers with ids alone.
-#[allow(dead_code, reason = "called only by Live::act, see its own allow")]
 fn describe_selector(selector: &SelectorSpec) -> String {
     match selector {
         SelectorSpec::All => "all sheep".to_owned(),
@@ -358,96 +341,8 @@ fn describe_selector(selector: &SelectorSpec) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shep_client::{
-        ReconnectingClient,
-        shep_core::{protocol::Envelope, status::ProcStatus},
-        testing,
-    };
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::mpsc;
-
-    /// A fake shepherd that answers the one request a test arms, and
-    /// panics on anything else: every test here drives exactly one round
-    /// trip, so a second or a mismatched request reaching the fake is a
-    /// test bug, not a daemon behaviour worth scripting around.
-    struct Fake {
-        armed: Arc<Mutex<Option<(Request, Response)>>>,
-        // Held for their lifetime rather than their value. Dropping the
-        // envelope receiver makes the fake's forwarding `send` fail and the
-        // connection close before it writes a reply, and dropping the
-        // tempdir while `ReconnectingClient` is still holding the file
-        // open is a needless way to find out whether that matters on a
-        // given platform.
-        #[allow(dead_code, reason = "kept only to outlive the fake shepherd")]
-        envelopes: mpsc::UnboundedReceiver<Envelope>,
-        #[allow(dead_code, reason = "kept only to outlive the fake shepherd")]
-        dir: tempfile::TempDir,
-    }
-
-    impl Fake {
-        fn expect(&mut self, request: Request) -> Armed<'_> {
-            Armed {
-                fake: self,
-                request,
-            }
-        }
-    }
-
-    /// The half of `fake.expect(request)` waiting on `.answer(response)`.
-    struct Armed<'a> {
-        fake: &'a mut Fake,
-        request: Request,
-    }
-
-    impl Armed<'_> {
-        fn answer(self, response: Response) {
-            *self.fake.armed.lock().expect("not poisoned") = Some((self.request, response));
-        }
-    }
-
-    /// A connected [`Live`] and the fake shepherd behind it, for a test
-    /// that arms one request/response pair and drives one [`Live`] call.
-    async fn test_live() -> (Live, Fake) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let socket = testing::control_address(dir.path());
-        let armed: Arc<Mutex<Option<(Request, Response)>>> = Arc::new(Mutex::new(None));
-        let script = Arc::clone(&armed);
-        let envelopes = testing::fake_daemon_answering_with_ack(
-            &socket,
-            testing::sample_ack(),
-            move |request| {
-                let (expected, response) = script
-                    .lock()
-                    .expect("not poisoned")
-                    .take()
-                    .unwrap_or_else(|| {
-                        panic!("the fake was asked {request:?} before a test armed one")
-                    });
-                assert_eq!(
-                    &expected, request,
-                    "asked something other than what the test armed"
-                );
-                response
-            },
-        )
-        .await;
-        let client = ReconnectingClient::connect(&socket)
-            .await
-            .expect("test dial");
-        (
-            Live::new(client),
-            Fake {
-                armed,
-                envelopes,
-                dir,
-            },
-        )
-    }
-
-    /// One sheep, named `name`, for a test that only cares about the name.
-    fn sample(name: &str) -> ProcessInfo {
-        ProcessInfo::builder(0, name, ProcStatus::Online).build()
-    }
+    use crate::test_support::{sample, test_live};
+    use shep_client::{ReconnectingClient, testing};
 
     #[tokio::test]
     async fn start_asks_a_restart_and_still_says_started() {
