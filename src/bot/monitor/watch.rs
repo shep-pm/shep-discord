@@ -13,7 +13,10 @@ use std::sync::Arc;
 
 use shep_client::shep_core::protocol::{ProcessEventKind, ProcessInfo};
 
-use crate::bot::{channel, monitor::Monitor};
+use crate::bot::{
+    channel,
+    monitor::{Monitor, refresh},
+};
 
 /// A monitor and the channel it draws on, for the bus-event side of this
 /// dog.
@@ -64,7 +67,7 @@ impl Wired {
     /// kept at `ready.ts:28`: an operator who has not started the monitor
     /// gets no messages in a channel from a bus event either.
     pub async fn on_process_event(&self, kind: ProcessEventKind, info: &ProcessInfo) {
-        if !self.monitor.is_running() {
+        if !refresh::is_running(&self.monitor) {
             return;
         }
         match action_for(kind) {

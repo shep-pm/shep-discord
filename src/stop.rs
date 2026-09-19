@@ -119,7 +119,7 @@ impl Request {
     /// Ask every [`Stop`] made with this to stop.
     ///
     /// Takes `&self` rather than consuming, because
-    /// [`crate::bot::monitor::Monitor::stop`] fires this while the
+    /// [`crate::bot::monitor::refresh::stop`] fires this while the
     /// `Running` that owns it stays in the monitor's own field: taking it
     /// out to fire it is what used to leave a window where a concurrent
     /// start saw no task. Asking twice is harmless; the watch channel

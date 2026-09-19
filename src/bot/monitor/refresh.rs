@@ -6,10 +6,20 @@
 //! reasoning about the engine's locking, and none of the locking is read
 //! while adding a config key.
 //!
-//! [`super::Monitor::stop`] stays with the engine rather than living here
-//! beside [`start`]: it is the other half of [`super::Monitor::is_running`]
-//! and touches the same field, so splitting the pair would put one lock's
-//! two readers in two files.
+//! Every operation on the monitor's task lives here: [`start`] spawns
+//! that task, [`is_running`] reports whether one is up and [`stop()`] ends
+//! it. The field itself is declared on [`Monitor`] next door, because it
+//! is a field of that struct, and the engine does nothing with it beyond
+//! setting it to `None` in `Monitor::new`. Holding the three together is
+//! the point rather than a side effect: they are the only readers of one
+//! lock, and the handshake between them is subtle enough that reading
+//! half of it in another file is how it was got wrong once already.
+//!
+//! [`stop()`] is written with parentheses wherever it is linked because
+//! this module imports [`crate::stop`] as well, and a bare `stop` would
+//! be a link to either. The function keeps the name regardless: what the
+//! two command call sites read is [`start`] beside [`stop()`], and that
+//! pairing is worth more than the one character.
 
 use core::time::Duration;
 use std::sync::Arc;
@@ -30,7 +40,7 @@ use crate::{
 
 /// A running refresh task and the handle that ends it.
 ///
-/// The handle is an `Option` because [`Monitor::stop`] has to take it out
+/// The handle is an `Option` because [`stop()`] has to take it out
 /// to await it while leaving this `Running` in the monitor's own field:
 /// `None` here means a stop is waiting for the task to drain, which
 /// [`Running::active`] counts as running for exactly as long as it takes.
@@ -42,7 +52,7 @@ pub(super) struct Running {
 impl Running {
     /// Whether this task should stop a new one being spawned beside it.
     ///
-    /// True while the task is alive, and true while a [`Monitor::stop`]
+    /// True while the task is alive, and true while a [`stop()`]
     /// holds its handle and waits for it to end. A finished task that
     /// nothing has cleared yet is the only case that answers false, which
     /// is what lets a refresh loop that returned on its own be replaced
@@ -108,8 +118,8 @@ impl Refresh {
 /// # What this stop does and does not reach
 ///
 /// The [`crate::stop::Request`] here is private to this task and is held by
-/// nothing else, so exactly one thing ever fires it: [`Monitor::stop`],
-/// which `/monitor stop` calls and then waits on. That path ends the task
+/// nothing else, so exactly one thing ever fires it: [`stop()`], which
+/// `/monitor stop` calls and then waits on. That path ends the task
 /// properly.
 ///
 /// Ctrl-c does not. `main` builds its own [`Stop`] for the run loop and
@@ -201,6 +211,91 @@ pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
     true
 }
 
+/// Whether a refresh task is running right now.
+///
+/// The gate the old code kept at `ready.ts:28`: a bus event only draws
+/// while the monitor is on, so a dog with no monitor configured never
+/// writes to a channel an operator did not ask it to write to.
+///
+/// A free function taking `&Monitor`, as [`start`] and [`refresh_now`]
+/// beside it already are. What it reads is the task, which is this
+/// module's subject, rather than the cache, which is the engine's.
+#[must_use]
+pub fn is_running(monitor: &Monitor) -> bool {
+    monitor
+        .task
+        .lock()
+        .expect("not poisoned")
+        .as_ref()
+        .is_some_and(Running::active)
+}
+
+/// End the refresh task, wait for it to finish, and say whether
+/// there was one.
+///
+/// Asks rather than aborts: the task's `select!` is biased on the
+/// stop, so it returns at the top of its next turn around the loop,
+/// and a refresh already in flight finishes its Discord calls first
+/// rather than stopping half way through a redraw with an embed
+/// posted and its id not yet cached.
+///
+/// Then waits, which is the part that matters for correctness rather
+/// than tidiness. Dropping the handle and returning would let a
+/// `/monitor stop` immediately followed by a `/monitor start` leave
+/// two refresh tasks running against one monitor, and two tasks are
+/// worse than none: one task's departed sweep can delete a message
+/// the other posted moments earlier for a sheep that is perfectly
+/// alive. Only the caller can wait, because only the caller knows it
+/// is allowed to: `/monitor stop` is a command with a deferred
+/// interaction behind it, so it has minutes to answer in, and every
+/// other path to here is a test.
+///
+/// Waiting is not enough on its own, and this used to take the whole
+/// [`Running`] out of the field before awaiting it. That left the
+/// field `None` for the length of the drain, so a `/monitor start`
+/// arriving in that window found nothing running and spawned its own
+/// task beside the one still finishing: the exact pair of tasks the
+/// wait exists to prevent, reachable by two operators or by one
+/// impatient one, since serenity dispatches every interaction on its
+/// own task. Only the handle is taken out now. [`Running`] stays
+/// where it is until the task has ended, so [`is_running`] keeps
+/// answering true and that start is refused.
+///
+/// A second concurrent `stop` finds the handle already taken. It
+/// answers true without waiting and without clearing the field,
+/// leaving that to the call that holds the handle: two callers both
+/// get the truth, that the task is on its way out, and only one of
+/// them can say when it is gone.
+///
+/// The wait is bounded by whatever the task is doing, which is at
+/// worst one refresh of the flock. A Discord request that never
+/// returns is the only thing that could stretch it, and serenity's
+/// HTTP client times out rather than hanging forever.
+pub async fn stop(monitor: &Monitor) -> bool {
+    // Scoped so the `std::sync::Mutex` guard is dropped before the
+    // await below, which is the engine's standing rule and, here,
+    // also what stops this from being unable to return a `Send`
+    // future to the command that calls it.
+    let handle = {
+        let mut task = monitor.task.lock().expect("not poisoned");
+        let Some(running) = task.as_mut() else {
+            return false;
+        };
+        running.request.request();
+        running.handle.take()
+    };
+    let Some(handle) = handle else {
+        // Another `stop` is already waiting on this task and will
+        // clear the field when it ends.
+        return true;
+    };
+    if let Err(err) = handle.await {
+        eprintln!("{}", task_ended_badly_message(&err));
+    }
+    *monitor.task.lock().expect("not poisoned") = None;
+    true
+}
+
 /// Redraw the flock right now, out of the ticker's turn, and say how many
 /// sheep were redrawn. `None` when the monitor is not running.
 ///
@@ -208,8 +303,8 @@ pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
 /// with the cache because everything it means is about the schedule: run
 /// one pass now, out of turn, without disturbing the ticker. The gate is
 /// here rather than in the command for two reasons: it asks the same
-/// question [`Monitor::is_running`] answers, and both of its outcomes are
-/// then testable against a fake board with no gateway behind them.
+/// question [`is_running`] answers, and both of its outcomes are then
+/// testable against a fake board with no gateway behind them.
 ///
 /// One extra pass, not a new ticker: nothing here touches the task or its
 /// schedule, so the next tick falls exactly when it would have. Running
@@ -229,7 +324,7 @@ pub async fn refresh_now<B: Board>(
     live: &Live,
     ignore_dogs: bool,
 ) -> Result<Option<usize>, Error> {
-    if !monitor.is_running() {
+    if !is_running(monitor) {
         return Ok(None);
     }
     monitor.update_all(board, live, ignore_dogs).await.map(Some)
@@ -268,6 +363,8 @@ pub(super) fn task_ended_badly_message(err: &tokio::task::JoinError) -> String {
 
 #[cfg(test)]
 mod tests {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
     use shep_client::shep_core::{
         protocol::{ProcessInfo, Request, Response},
         status::ProcStatus,
@@ -353,7 +450,7 @@ mod tests {
                 !start_from_config(&monitor, &config, &live),
                 "{toml:?} does not ask for a monitor from boot"
             );
-            assert!(!monitor.is_running());
+            assert!(!is_running(&monitor));
         }
     }
 
@@ -365,5 +462,100 @@ mod tests {
             .await
             .expect_err("the task panicked");
         crate::test_support::assert_no_dashes(&task_ended_badly_message(&panicked));
+    }
+
+    /// A `/monitor stop` followed straight away by a `/monitor start`
+    /// must not leave two tasks redrawing one channel, which is what
+    /// [`start`]'s own doc promises. Dropping the handle rather than
+    /// joining it broke that promise: the request was sent and the task
+    /// kept running while the next start spawned its replacement.
+    ///
+    /// The flag is set by the task on its way out, so asserting it the
+    /// instant [`stop()`] returns is what proves it waited rather than
+    /// merely asked. A hand-installed task stands in for the real refresh
+    /// loop, which would need a token and a channel behind it.
+    ///
+    /// The receiving half of the [`Stop`] is `signal` here rather than
+    /// `stop`, which is what [`start`] calls it: a local of that name
+    /// would shadow the [`stop()`] this test is about.
+    #[tokio::test]
+    async fn stopping_waits_for_its_task_rather_than_abandoning_it() {
+        let monitor = Monitor::new();
+        let ended = Arc::new(AtomicBool::new(false));
+        let (mut signal, request) = Stop::new();
+        let flag = Arc::clone(&ended);
+        let handle = tokio::spawn(async move {
+            signal.wait().await;
+            // A refresh already in flight, finishing after the stop was
+            // asked for and before the task returns.
+            tokio::task::yield_now().await;
+            flag.store(true, Ordering::SeqCst);
+        });
+        *monitor.task.lock().expect("not poisoned") = Some(Running {
+            handle: Some(handle),
+            request,
+        });
+        assert!(is_running(&monitor));
+
+        assert!(stop(&monitor).await);
+
+        assert!(
+            ended.load(Ordering::SeqCst),
+            "stop returned while its task was still running, so a start could spawn a second one \
+             beside it"
+        );
+        assert!(!is_running(&monitor));
+        assert!(!stop(&monitor).await, "there is nothing left to stop");
+    }
+
+    /// The window between the stop being asked for and the task actually
+    /// ending belongs to that task, so the monitor has to keep claiming
+    /// to be running throughout it. [`start`] refuses while
+    /// [`is_running`] is true, and that refusal is the only thing standing
+    /// between an impatient operator and two refresh loops on one
+    /// channel: serenity dispatches every interaction on its own task, so
+    /// a `/monitor start` can land while a `/monitor stop` is still
+    /// waiting.
+    ///
+    /// Nothing here sleeps. The task announces that it has seen the stop
+    /// and then blocks until this test releases it, so the assertion
+    /// falls inside the drain window by construction rather than by
+    /// timing.
+    #[tokio::test]
+    async fn a_monitor_counts_as_running_while_its_task_is_draining() {
+        let monitor = Monitor::new();
+        let draining = Arc::new(AtomicBool::new(false));
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let (mut signal, request) = Stop::new();
+        let flag = Arc::clone(&draining);
+        let handle = tokio::spawn(async move {
+            signal.wait().await;
+            // A refresh still finishing its Discord calls after the stop
+            // was asked for: exactly what `stop` waits out.
+            flag.store(true, Ordering::SeqCst);
+            let _ = released.await;
+        });
+        *monitor.task.lock().expect("not poisoned") = Some(Running {
+            handle: Some(handle),
+            request,
+        });
+
+        let watch = async {
+            while !draining.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            let running = is_running(&monitor);
+            let _ = release.send(());
+            running
+        };
+        let (stopped, running_mid_drain) = tokio::join!(stop(&monitor), watch);
+
+        assert!(stopped);
+        assert!(
+            running_mid_drain,
+            "the monitor reported itself idle while its task was still draining, so a start \
+             racing this stop would have spawned a second refresh loop"
+        );
+        assert!(!is_running(&monitor), "and idle once the task is gone");
     }
 }

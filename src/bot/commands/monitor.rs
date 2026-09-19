@@ -317,10 +317,10 @@ impl Command for MonitorCommand {
                 "update" => self.update(state).await?,
                 "stop" => {
                     // Awaited rather than fired and forgotten: see
-                    // `Monitor::stop` for why the caller is the only
+                    // `refresh::stop` for why the caller is the only
                     // party that can wait, and why a start straight after
                     // a stop would otherwise run two tasks.
-                    if state.monitor.stop().await {
+                    if refresh::stop(&state.monitor).await {
                         stopped_message().to_owned()
                     } else {
                         not_running_message().to_owned()
