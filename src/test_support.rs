@@ -27,6 +27,28 @@ pub fn assert_no_dashes(text: &str) {
     assert!(!text.contains('\u{2013}'), "en dash in {text:?}");
 }
 
+/// Assert every string anywhere in `value`, at any depth, carries neither
+/// dash: recurses through arrays and objects rather than reading one
+/// known field, so a command's own serialized JSON is covered whole.
+///
+/// A check that only reads `value["description"]` at the top level missed
+/// a nested subcommand's own description once already: `/system` has no
+/// nesting, so a top-level-only check happened to be enough for the first
+/// command this crate registered, and stayed enough right up until
+/// `/shep` became the first to declare subcommand and sub-option
+/// descriptions of its own, at a level the flat check never reached. A
+/// recursive walk is what stops a tenth level of nesting from repeating
+/// the same gap a second time.
+#[track_caller]
+pub fn assert_no_dashes_deep(value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => assert_no_dashes(text),
+        serde_json::Value::Array(items) => items.iter().for_each(assert_no_dashes_deep),
+        serde_json::Value::Object(fields) => fields.values().for_each(assert_no_dashes_deep),
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
 /// A fake shepherd that answers the one request a test arms, and panics on
 /// anything else: every test built on [`test_live`] drives exactly one
 /// round trip, so a second or a mismatched request reaching the fake is a

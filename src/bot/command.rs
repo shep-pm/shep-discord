@@ -203,17 +203,21 @@ mod tests {
         );
     }
 
-    /// No registered command's description reaches a person with a dash
-    /// in it. `/system`'s own dash check only ever reached
-    /// [`crate::bot::commands::system::not_sampling_message`]; nothing
-    /// swept `CreateCommand::description` itself until now, so a later
-    /// command's description would have shipped unchecked.
+    /// No registered command's serialized JSON reaches a person with a
+    /// dash anywhere in it, at any depth. `/system`'s own dash check only
+    /// ever reached [`crate::bot::commands::system::not_sampling_message`];
+    /// nothing swept `CreateCommand`'s own serialized form until commit
+    /// `09b50c5`, and that fix read only the top-level `description`,
+    /// which was every level `/system` had. `/shep` was the first command
+    /// in this crate to nest a subcommand and a sub-option under it, and a
+    /// flat check would have missed both: this walks the whole tree so a
+    /// tenth level of nesting later is covered without anyone remembering
+    /// to extend the check by hand again.
     #[test]
-    fn no_registered_commands_description_carries_a_dash() {
+    fn no_registered_commands_json_carries_a_dash_at_any_depth() {
         for command in registry() {
             let json = serde_json::to_value(command.data()).expect("json");
-            let description = json["description"].as_str().expect("description");
-            crate::test_support::assert_no_dashes(description);
+            crate::test_support::assert_no_dashes_deep(&json);
         }
     }
 

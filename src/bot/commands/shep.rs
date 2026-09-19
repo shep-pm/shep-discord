@@ -608,7 +608,12 @@ mod tests {
     #[test]
     fn nothing_printed_for_a_person_carries_a_dash() {
         crate::test_support::assert_no_dashes(empty_flock_message());
+        // Walks every subcommand and sub-option description too, not just
+        // this command's own top-level one: `no_registered_commands_json_carries_a_dash_at_any_depth`
+        // in `bot::command` already sweeps the whole registry this way,
+        // but this file's own dash test predates that fix and is kept
+        // consistent with it rather than left checking only one level.
         let json = serde_json::to_value(ShepCommand.data()).expect("json");
-        crate::test_support::assert_no_dashes(json["description"].as_str().expect("description"));
+        crate::test_support::assert_no_dashes_deep(&json);
     }
 }
