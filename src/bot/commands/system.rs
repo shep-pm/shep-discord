@@ -148,7 +148,14 @@ mod tests {
     #[test]
     fn every_registered_field_is_admin_gated() {
         let json = serde_json::to_value(System.data()).expect("json");
-        assert!(json.get("default_member_permissions").is_some());
+        // `Some` alone would pass on any value, wrong permission bit
+        // included; serenity serializes `default_member_permissions` as
+        // the bitfield's own decimal string, so the exact value is what
+        // is checked.
+        assert_eq!(
+            json["default_member_permissions"],
+            Permissions::ADMINISTRATOR.bits().to_string()
+        );
     }
 
     #[test]

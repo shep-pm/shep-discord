@@ -156,17 +156,23 @@ pub async fn register(
 
 #[cfg(test)]
 mod tests {
+    use serenity::all::Permissions;
+
     use super::*;
 
     #[test]
     fn every_registered_command_is_admin_gated() {
         // Both source repos gated all three on Administrator. A command
         // that restarts production is not one an unprivileged member gets
-        // to try.
+        // to try. `Some` alone would pass on any value, wrong permission
+        // bit included, so the exact serialized bitfield is what is
+        // checked; serenity serializes it as that bitfield's own decimal
+        // string.
+        let admin = Permissions::ADMINISTRATOR.bits().to_string();
         for command in registry() {
             let json = serde_json::to_value(command.data()).expect("json");
-            assert!(
-                json.get("default_member_permissions").is_some(),
+            assert_eq!(
+                json["default_member_permissions"], admin,
                 "{} is not permission gated",
                 json["name"]
             );
@@ -192,6 +198,20 @@ mod tests {
             count,
             "a duplicate name silently shadows a command"
         );
+    }
+
+    /// No registered command's description reaches a person with a dash
+    /// in it. `/system`'s own dash check only ever reached
+    /// [`crate::bot::commands::system::not_sampling_message`]; nothing
+    /// swept `CreateCommand::description` itself until now, so a later
+    /// command's description would have shipped unchecked.
+    #[test]
+    fn no_registered_commands_description_carries_a_dash() {
+        for command in registry() {
+            let json = serde_json::to_value(command.data()).expect("json");
+            let description = json["description"].as_str().expect("description");
+            crate::test_support::assert_no_dashes(description);
+        }
     }
 
     /// `/system` is the first command this dog registers. Task 12 and
