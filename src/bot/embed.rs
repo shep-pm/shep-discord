@@ -114,10 +114,6 @@ pub fn parse_custom_id(raw: &str) -> Option<(Verb, u32)> {
 /// A truncated title is a worse read than a full one, but a title Discord
 /// refuses outright is not a read at all: the embed [`process_embed`]
 /// spent the rest of its fields building never reaches the channel either.
-#[allow(
-    dead_code,
-    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
-)]
 fn embed_title(name: &str) -> String {
     limits::fit(name, EMBED_TITLE_LIMIT)
 }
@@ -126,19 +122,11 @@ fn embed_title(name: &str) -> String {
 /// [`ProcessInfo::cpu_percent`] is `None` while stopped, freshly started,
 /// or reported by a daemon too old to sample it, and none of those three
 /// is a zero.
-#[allow(
-    dead_code,
-    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
-)]
 fn cpu_value(cpu_percent: Option<f32>) -> String {
     cpu_percent.map_or_else(|| "unknown".to_owned(), |percent| format!("{percent:.1}%"))
 }
 
 /// `memory_bytes`'s reading, on [`cpu_value`]'s own terms.
-#[allow(
-    dead_code,
-    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
-)]
 fn memory_value(memory_bytes: Option<u64>) -> String {
     memory_bytes.map_or_else(
         || "unknown".to_owned(),
@@ -147,10 +135,6 @@ fn memory_value(memory_bytes: Option<u64>) -> String {
 }
 
 /// The OS pid, or `N/A` while the sheep is not running.
-#[allow(
-    dead_code,
-    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
-)]
 fn pid_value(pid: Option<u32>) -> String {
     pid.map_or_else(|| "N/A".to_owned(), |pid| pid.to_string())
 }
@@ -162,10 +146,6 @@ fn pid_value(pid: Option<u32>) -> String {
 /// table, and shep does not bound either a process's own name or how many
 /// descendants a walk can find, so the joined string this builds is exactly
 /// as unbounded as an operator-chosen fold or a sheep's own name.
-#[allow(
-    dead_code,
-    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
-)]
 fn lambs_value(lambs: &[Lamb]) -> String {
     if lambs.is_empty() {
         return "none".to_owned();
@@ -184,10 +164,6 @@ fn lambs_value(lambs: &[Lamb]) -> String {
 /// whatever an operator handed `shep adopt`, with no length rule in
 /// shep-core's config validation or the daemon, so it is exactly as
 /// unbounded as a sheep's own name.
-#[allow(
-    dead_code,
-    reason = "called by process_embed; unreached from main until Task 12's /shep list draws it"
-)]
 fn dog_value(dog: &DogSource) -> String {
     match dog {
         DogSource::BuiltIn => "built in".to_owned(),
@@ -198,14 +174,61 @@ fn dog_value(dog: &DogSource) -> String {
     }
 }
 
+/// The ordered `(name, value)` field list a sheep's embed draws: seven
+/// always, Status through Sheep ID, and six more only when `info` carries
+/// the value, Instance, Lambs, Fold, Smit, Dog, and Dog Stale, the last
+/// only when `dog_stale` is `Some(true)`, since `Some(false)` and `None`
+/// both mean there is nothing an operator needs to see.
+///
+/// [`process_embed`] and [`embed_character_count`] both fold over this one
+/// list rather than each carrying its own copy of it: a restated character
+/// budget already drifted from what this module actually built once,
+/// before `embed_worst_case_field_arithmetic_stays_under_budget` pinned
+/// the doc comment below against the built embed's own JSON instead of a
+/// hand count, and two field lists in two functions is the same drift
+/// waiting to happen again the moment one of them changes without the
+/// other.
+fn fields(info: &ProcessInfo) -> Vec<(&'static str, String)> {
+    let mut fields = vec![
+        ("Status", info.status.to_string()),
+        (
+            "Uptime",
+            UpDuration::from_millis(info.uptime_ms).to_string(),
+        ),
+        ("CPU", cpu_value(info.cpu_percent)),
+        ("Memory", memory_value(info.memory_bytes)),
+        ("Restarts", info.restarts.to_string()),
+        ("PID", pid_value(info.pid)),
+        ("Sheep ID", info.id.to_string()),
+    ];
+
+    if let Some(instance) = info.instance {
+        fields.push(("Instance", instance.to_string()));
+    }
+    if let Some(lambs) = &info.lambs {
+        fields.push(("Lambs", lambs_value(lambs)));
+    }
+    if let Some(fold) = &info.fold {
+        fields.push(("Fold", limits::fit(fold, FIELD_VALUE_LIMIT)));
+    }
+    if let Some(smit) = &info.smit {
+        fields.push(("Smit", limits::fit(smit, FIELD_VALUE_LIMIT)));
+    }
+    if let Some(dog) = &info.dog {
+        fields.push(("Dog", dog_value(dog)));
+    }
+    if info.dog_stale == Some(true) {
+        fields.push(("Dog Stale", "yes".to_owned()));
+    }
+
+    fields
+}
+
 /// Render one sheep as a [`CreateEmbed`].
 ///
 /// Green when [`ProcessInfo::status`] is [`ProcStatus::Online`], red
-/// otherwise. Seven fields always: Status, Uptime, CPU, Memory, Restarts,
-/// PID, Sheep ID. Six more fields, added only when `info` carries the
-/// value: Instance, Lambs, Fold, Smit, Dog, and Dog Stale, the last shown
-/// only when `dog_stale` is `Some(true)`, since `Some(false)` and `None`
-/// both mean there is nothing an operator needs to see.
+/// otherwise. See [`fields`] for which of the thirteen possible fields a
+/// given `info` draws.
 ///
 /// Never carries a field for `version`, `namespace`, `exec_mode`,
 /// `max_memory_restart`, `autorestart`, or `interpreter`: none of the six
@@ -246,10 +269,12 @@ fn dog_value(dog: &DogSource) -> String {
 /// `embed_worst_case_field_arithmetic_stays_under_budget` builds exactly
 /// this case and checks the built embed's own JSON, not this restated
 /// number.
-#[allow(
-    dead_code,
-    reason = "called by Task 12's /shep list; unreached from main until then"
-)]
+///
+/// This is still one embed's own worst case, not the message it rides on.
+/// [`crate::bot::commands::shep`]'s `/shep list` is the first caller that
+/// can put more than one of these on a message, and it sums
+/// [`embed_character_count`] across every sheep it draws to keep that true
+/// aggregate under budget rather than trusting this margin twice over.
 pub fn process_embed(info: &ProcessInfo) -> CreateEmbed {
     let colour = if info.status == ProcStatus::Online {
         Colour::DARK_GREEN
@@ -259,39 +284,36 @@ pub fn process_embed(info: &ProcessInfo) -> CreateEmbed {
 
     let mut embed = CreateEmbed::new()
         .title(embed_title(&info.name))
-        .colour(colour)
-        .field("Status", info.status.to_string(), true)
-        .field(
-            "Uptime",
-            UpDuration::from_millis(info.uptime_ms).to_string(),
-            true,
-        )
-        .field("CPU", cpu_value(info.cpu_percent), true)
-        .field("Memory", memory_value(info.memory_bytes), true)
-        .field("Restarts", info.restarts.to_string(), true)
-        .field("PID", pid_value(info.pid), true)
-        .field("Sheep ID", info.id.to_string(), true);
-
-    if let Some(instance) = info.instance {
-        embed = embed.field("Instance", instance.to_string(), true);
+        .colour(colour);
+    for (name, value) in fields(info) {
+        embed = embed.field(name, value, true);
     }
-    if let Some(lambs) = &info.lambs {
-        embed = embed.field("Lambs", lambs_value(lambs), true);
-    }
-    if let Some(fold) = &info.fold {
-        embed = embed.field("Fold", limits::fit(fold, FIELD_VALUE_LIMIT), true);
-    }
-    if let Some(smit) = &info.smit {
-        embed = embed.field("Smit", limits::fit(smit, FIELD_VALUE_LIMIT), true);
-    }
-    if let Some(dog) = &info.dog {
-        embed = embed.field("Dog", dog_value(dog), true);
-    }
-    if info.dog_stale == Some(true) {
-        embed = embed.field("Dog Stale", "yes", true);
-    }
-
     embed
+}
+
+/// The character cost [`process_embed`] would add to one Discord message:
+/// its title plus every field name and value [`fields`] builds.
+///
+/// A caller stacking more than one sheep's embed onto one followup, the
+/// way `/shep list` does, needs this to decide how many fit before Discord
+/// decides for it with a 400: [`crate::limits::MESSAGE_CHARACTER_BUDGET`]
+/// is a sum across every embed on the message, and [`process_embed`]'s own
+/// doc comment only works out one embed's own worst case.
+///
+/// Recomputes [`fields`] rather than serializing the built embed back to
+/// JSON to measure it: `serde_json` is a dev-dependency of this crate, for
+/// its own tests, and pulling it into the shipped binary just to read a
+/// character count back out of a value this function already knows how to
+/// build would be a second, slower way to ask a question [`fields`]
+/// already answers.
+#[must_use]
+pub fn embed_character_count(info: &ProcessInfo) -> usize {
+    let title = embed_title(&info.name).chars().count();
+    let drawn: usize = fields(info)
+        .iter()
+        .map(|(name, value)| name.chars().count() + value.chars().count())
+        .sum();
+    title + drawn
 }
 
 /// The five action buttons an operator gets on a sheep's embed, one row,
@@ -541,5 +563,48 @@ mod tests {
             "{} over the message budget",
             title_len + field_len
         );
+    }
+
+    /// [`embed_character_count`] and [`process_embed`] both fold over
+    /// [`fields`], so this pins them against each other rather than
+    /// against a third hand count: the built embed's own JSON is what
+    /// Discord actually sees, and `embed_character_count` exists so a
+    /// caller packing several sheep onto one message never has to build
+    /// the embed first just to learn its size.
+    #[test]
+    fn embed_character_count_matches_the_built_embeds_own_json() {
+        let worst = ProcessInfo::builder(
+            u32::MAX,
+            "a".repeat(EMBED_TITLE_LIMIT + 50),
+            ProcStatus::Online,
+        )
+        .pid(Some(u32::MAX))
+        .restarts(u32::MAX)
+        .uptime_ms(u64::MAX)
+        .cpu_percent(Some(f32::MIN))
+        .memory_bytes(Some(u64::MAX))
+        .instance(Some(u32::MAX))
+        .lambs(Some(vec![Lamb::new(u32::MAX, "x".repeat(2_000))]))
+        .fold(Some("f".repeat(2_000)))
+        .smit(Some("s".repeat(2_000)))
+        .dog(Some(DogSource::Adopted {
+            path: "p".repeat(2_000),
+        }))
+        .dog_stale(Some(true))
+        .build();
+
+        let json = serde_json::to_value(process_embed(&worst)).expect("json");
+        let title_len = json["title"].as_str().expect("title").chars().count();
+        let field_len: usize = json["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .map(|field| {
+                field["name"].as_str().expect("name").chars().count()
+                    + field["value"].as_str().expect("value").chars().count()
+            })
+            .sum();
+
+        assert_eq!(embed_character_count(&worst), title_len + field_len);
     }
 }
