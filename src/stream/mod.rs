@@ -14,6 +14,13 @@
 //! touches a live [`Live`] session and a real [`Sink`], built by
 //! [`state::State::from_config`] and driven by `tokio::select!`.
 //!
+//! [`run`]'s bus subscription is also where the live monitor hears about a
+//! sheep changing state, which is the one place this module reaches into
+//! [`crate::bot`]: this loop already has the only `process.*` subscription
+//! in the process, and opening a second one for the monitor's sake would
+//! double the bus traffic to learn the same facts twice. Nothing else here
+//! touches the bot half, and nothing in the bot half opens a stream.
+//!
 //! # Why ctrl-c is the only stop this loop honours
 //!
 //! There is no `SIGTERM` handler here, and [`run`] never drains
@@ -51,6 +58,7 @@ use core::fmt;
 use shep_client::shep_core::protocol::{BusEvent, ProcessEventKind};
 
 use crate::{
+    bot::monitor,
     config::Config,
     error::Error,
     names::Names,
@@ -115,8 +123,8 @@ pub trait Sink {
     async fn send(&self, channel: u64, chunks: Vec<Chunk>) -> Result<(), SinkError>;
 }
 
-/// Subscribe to this dog's four bus topics and drive [`state::State`] until
-/// `stop` resolves or the subscription itself ends.
+/// Subscribe to this dog's bus topics and drive [`state::State`], and the
+/// live monitor, until `stop` resolves or the subscription itself ends.
 ///
 /// `own_id` is `Some` with the numeric id the shepherd assigned this dog
 /// when the caller resolved one against the muster roll's own dog rows and
@@ -132,10 +140,20 @@ pub trait Sink {
 /// placeholder.
 ///
 /// Subscribes to `log.out` and `log.err` for the lines themselves, and to
-/// `process.start` and `process.delete` so the name cache tracks what the
-/// flock currently holds; nothing else on the bus changes what a line
-/// renders as, and a `Lagged` item ends nothing, matching
-/// [`shep_client::EventStream`]'s own contract.
+/// six `process.*` topics. Two of them, `process.start` and
+/// `process.delete`, keep the name cache tracking what the flock holds;
+/// all six are handed to `monitor`, so a sheep that stops, comes back
+/// online, exits or is restarted is redrawn the moment it happens rather
+/// than up to a whole refresh interval later. A `Lagged` item ends
+/// nothing, matching [`shep_client::EventStream`]'s own contract.
+///
+/// `monitor` is `Some` only when `dogs.toml` names a `monitor_channel`,
+/// and even then [`monitor::Wired::on_process_event`] draws nothing while
+/// the refresh task is off: that is the gate the old code kept at
+/// `ready.ts:28`, and it is what stops a bus event writing to a channel an
+/// operator has not turned the monitor on for. Redrawing inside this
+/// `select!` holds the loop for one Discord round trip, the same as the
+/// muster-roll read beside it already does.
 ///
 /// The `select!` is `biased`, stop first, the same shape shep-log-rotate's
 /// own `wait` uses: a stop already requested wins over a flush tick or a
@@ -155,6 +173,7 @@ pub async fn run<S: Sink>(
     own_id: Option<u32>,
     names: Names,
     sink: &S,
+    monitor: Option<&monitor::Wired>,
     stop: &mut Stop,
 ) -> Result<(), Error> {
     let mut events = live
@@ -163,6 +182,10 @@ pub async fn run<S: Sink>(
             "log.err".to_owned(),
             "process.start".to_owned(),
             "process.delete".to_owned(),
+            "process.stop".to_owned(),
+            "process.online".to_owned(),
+            "process.exit".to_owned(),
+            "process.restart".to_owned(),
         ])
         .await?;
 
@@ -180,13 +203,21 @@ pub async fn run<S: Sink>(
             event = events.next() => match event {
                 None => return Ok(()),
                 Some(Err(lagged)) => state.on_lagged(lagged),
-                Some(Ok(BusEvent::Process {
-                    event: ProcessEventKind::Start | ProcessEventKind::Delete,
-                    ..
-                })) => match live.flock().await {
-                    Ok(roll) => state.refresh_names(&roll),
-                    Err(err) => eprintln!("shep-discord: {err}"),
-                },
+                Some(Ok(BusEvent::Process { event, info, .. })) => {
+                    // The roll is reread only for the two events that
+                    // change which sheep exist; the other four change a
+                    // sheep's state, and its name with it stays what the
+                    // last read said.
+                    if matches!(event, ProcessEventKind::Start | ProcessEventKind::Delete) {
+                        match live.flock().await {
+                            Ok(roll) => state.refresh_names(&roll),
+                            Err(err) => eprintln!("shep-discord: {err}"),
+                        }
+                    }
+                    if let Some(wired) = monitor {
+                        wired.on_process_event(event, &info).await;
+                    }
+                }
                 Some(Ok(bus_event)) => state.on_event(bus_event),
             },
         }

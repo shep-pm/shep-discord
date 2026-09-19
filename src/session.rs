@@ -7,7 +7,17 @@
 
 use shep_client::shep_core::protocol::ProcessInfo;
 
-use crate::{config::Config, error::Error, names::Names, shepherd::Live, stop::Stop, stream};
+use std::sync::Arc;
+
+use crate::{
+    bot::{channel, monitor},
+    config::Config,
+    error::Error,
+    names::Names,
+    shepherd::Live,
+    stop::Stop,
+    stream,
+};
 
 /// What `handshake` and the current [`Names`] cache resolve to.
 ///
@@ -107,6 +117,11 @@ fn unresolved_message(name: &str) -> String {
 /// here without error is enough to try again on the next pass rather than
 /// needing a retry loop of its own.
 ///
+/// `monitor` is the one live monitor for this process, handed on so a
+/// `process.*` event redraws the sheep it names as it happens. It draws
+/// nothing at all while the refresh task is off; see
+/// [`monitor::Wired::on_process_event`].
+///
 /// `unresolved_warned` is the warn-once state [`warn_once`] threads across
 /// calls: `main`'s own run loop owns it for the lifetime of the process, the
 /// same way it owns `stop`, so a dog stuck unresolved prints exactly one
@@ -119,6 +134,7 @@ pub async fn stream_once(
     live: &Live,
     handshake: Option<&str>,
     config: &Config,
+    monitor: &Arc<monitor::Monitor>,
     unresolved_warned: &mut bool,
     stop: &mut Stop,
 ) -> Result<(), Error> {
@@ -139,7 +155,17 @@ pub async fn stream_once(
         }
     };
     let sink = stream::discord::DiscordSink::new(&config.token);
-    stream::run(live, config, own_id, names, &sink, stop).await
+    // Built per cycle rather than held across reconnects, the same as the
+    // sink beside it: a board is an HTTP client and a channel id, neither
+    // of which reaches the network until a request, while the `Monitor`
+    // itself and the message ids it has cached live for the whole
+    // process. `None` when no `monitor_channel` is configured, which is
+    // what keeps a bus event from drawing anywhere at all.
+    let wired = config.monitor_channel.map(|channel| monitor::Wired {
+        monitor: Arc::clone(monitor),
+        board: channel::Live::new(&config.token, channel),
+    });
+    stream::run(live, config, own_id, names, &sink, wired.as_ref(), stop).await
 }
 
 #[cfg(test)]

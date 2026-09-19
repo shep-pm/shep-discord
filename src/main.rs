@@ -311,6 +311,9 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // beside every one already in the channel. Shared with the gateway
     // task through `bot::command::State`.
     let monitor = Arc::new(bot::monitor::Monitor::new());
+    // Whether the boot start below has already had its one turn. See the
+    // comment there for why it is once rather than per cycle.
+    let mut monitor_started = false;
     // The name cache the gateway, the monitor's own refresh and the log
     // stream all read; owned here for the same reason `monitor` is.
     let names = Arc::new(Mutex::new(Names::new()));
@@ -395,6 +398,40 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         )));
                     }
 
+                    // Started once, on the first cycle that resolves a
+                    // config asking for it, rather than on every cycle:
+                    // an operator who ran `/monitor stop` must not have
+                    // the monitor restarted underneath them thirty
+                    // seconds later by a loop rereading the same
+                    // `dogs.toml`. `monitor_interval` is what says "run
+                    // this from boot"; `/monitor start` is the runtime
+                    // override, and it says in its own reply that it is
+                    // not written anywhere.
+                    if !monitor_started
+                        && let (Some(interval), Some(channel)) =
+                            (config.monitor_interval, config.monitor_channel)
+                    {
+                        // The attempt is what is recorded, not its
+                        // outcome: a start that found one already running
+                        // (an operator who was quicker with `/monitor
+                        // start` than this loop was to resolve a config)
+                        // has still had its turn, and retrying on the
+                        // next cycle would restart the monitor underneath
+                        // an operator again, which is what this flag
+                        // exists to prevent.
+                        monitor_started = true;
+                        bot::monitor::start(
+                            &monitor,
+                            bot::monitor::Refresh {
+                                board: bot::channel::Live::new(&config.token, channel),
+                                live: Arc::clone(live),
+                                names: Arc::clone(&names),
+                                ignore_dogs: config.ignore_dogs,
+                                interval: Duration::from_millis(interval.as_millis()),
+                            },
+                        );
+                    }
+
                     // Streaming only when a channel names somewhere to send
                     // to: an operator who never set `log_channel` or
                     // `err_channel` gets no bus subscription spent on lines
@@ -409,6 +446,7 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                             live,
                             handshake,
                             &config,
+                            &monitor,
                             &mut unresolved_warned,
                             &mut stop,
                         )
