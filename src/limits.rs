@@ -2,7 +2,7 @@
 //!
 //! # Why this file exists for one small function
 //!
-//! This port has now been bitten by a Discord length limit four times:
+//! This port has now been bitten by a Discord limit nine times:
 //! [`crate::bot::embed::custom_id`] found that a `custom_id` caps at 100
 //! characters, so a button keys on a numeric sheep id rather than a name;
 //! [`crate::stream::pack`] exists because the 6,000 character sum across
@@ -12,9 +12,16 @@
 //! [`crate::bot::embed`] before this file existed; and
 //! [`crate::bot::embed::process_embed`] put an operator-chosen fold or smit
 //! into a field with no cap at all, the same shape of gap as an uncapped
-//! sheep name. Four encounters with one class of bug is a missing
-//! abstraction, not four unrelated ones, so the caps live here once and
-//! [`fit`] is the one place a string gets cut down to one of them.
+//! sheep name. A fifth followed in [`MESSAGE_CONTENT_LIMIT`]'s own doc
+//! comment, a sixth in [`EMBED_MAX_COUNT`], a seventh and eighth in
+//! `/shep`'s own autocomplete (Discord's 25-choices-per-response cap, kept
+//! local to that command since nothing else in this crate offers
+//! suggestions), and a ninth here in [`AUTOCOMPLETE_CHOICE_NAME_LIMIT`].
+//! Nine encounters with one class of bug is a missing abstraction, not
+//! nine unrelated ones, so the caps live here once and [`fit`] is the one
+//! place a string gets cut down to one of them, where cutting is the
+//! right answer at all; see [`AUTOCOMPLETE_CHOICE_NAME_LIMIT`] for the one
+//! case here where it is not.
 //!
 //! `custom_id`'s own 100 character cap stays where it is, in
 //! [`crate::bot::embed`]: nothing there needs truncating, since
@@ -51,6 +58,24 @@ pub const MESSAGE_CHARACTER_BUDGET: usize = 6000;
 /// still stack eleven small embeds onto one message and take a 400 for the
 /// count alone, the same shape of gap a length-only check would leave.
 pub const EMBED_MAX_COUNT: usize = 10;
+
+/// The longest an autocomplete choice's `name` (and, since serenity's
+/// `AutocompleteChoice::from` sets both from the same string, its `value`
+/// too) may be. Discord's own limit, and the ninth this port has run
+/// into.
+///
+/// Not fed to [`fit`]: a truncated `value` is what Discord sends back as
+/// the argument once an operator picks the suggestion, so a truncated
+/// name would offer a sheep that does not exist under that shortened
+/// name, and the verb would fail against it. A name that cannot be sent
+/// whole cannot be offered as a working suggestion at all, so
+/// [`crate::bot::commands::shep::ShepCommand::suggestions`] drops it
+/// instead of shortening it, keeping every other suggestion in the same
+/// response alive. Discord answers one autocomplete response with every
+/// suggestion in a single payload, so a single over-length name, if sent,
+/// would fail the whole response and silently empty every suggestion for
+/// that keystroke, not just the one that was too long.
+pub const AUTOCOMPLETE_CHOICE_NAME_LIMIT: usize = 100;
 
 /// The longest a message's own `content` field may be, separate from
 /// anything an embed carries. Discord's own limit, and the sixth of its

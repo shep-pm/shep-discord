@@ -193,6 +193,12 @@ impl ShepCommand {
     /// Discord shows nothing for a failed autocomplete either way, and an
     /// error surfaced here would be logged once per keystroke rather than
     /// once, the way [`Command::run`]'s own failure is.
+    ///
+    /// A name past [`limits::AUTOCOMPLETE_CHOICE_NAME_LIMIT`] is dropped
+    /// rather than fitted: see that constant's own doc comment for why
+    /// shortening it would offer a sheep that does not exist, and why
+    /// leaving it in at all would silently empty every suggestion for
+    /// that keystroke, not just the one too long.
     async fn suggestions(&self, live: &Live, partial: &str) -> Vec<String> {
         let Ok(flock) = live.flock().await else {
             return Vec::new();
@@ -202,6 +208,7 @@ impl ShepCommand {
             .into_iter()
             .map(|info| info.name)
             .filter(|name| name.to_lowercase().contains(&needle))
+            .filter(|name| name.chars().count() <= limits::AUTOCOMPLETE_CHOICE_NAME_LIMIT)
             .take(AUTOCOMPLETE_CHOICE_LIMIT)
             .collect()
     }
@@ -468,6 +475,22 @@ mod tests {
         ]));
         let offered = ShepCommand.suggestions(&live, "WO").await;
         assert_eq!(offered, vec!["worker"]);
+    }
+
+    /// A name past [`limits::AUTOCOMPLETE_CHOICE_NAME_LIMIT`] cannot be
+    /// sent as a working suggestion at all (Discord would answer it back
+    /// as the argument to send, and a truncated one would name a sheep
+    /// that does not exist), so it is dropped rather than offered. The
+    /// other suggestions in the same call still come back: one bad name
+    /// must not empty the whole response.
+    #[tokio::test]
+    async fn a_name_past_the_choice_limit_is_dropped_not_offered() {
+        let (live, mut fake) = test_live().await;
+        let huge = "x".repeat(limits::AUTOCOMPLETE_CHOICE_NAME_LIMIT + 1);
+        fake.expect(Request::ListFlock)
+            .answer(Response::Flock(vec![sample("web"), sample(&huge)]));
+        let offered = ShepCommand.suggestions(&live, "").await;
+        assert_eq!(offered, vec!["web"]);
     }
 
     /// Every verb this command names round-trips through
