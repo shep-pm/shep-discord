@@ -556,7 +556,8 @@ mod tests {
         // Discord shows nothing for a failed autocomplete either way, and an
         // error here would be logged once per keystroke.
         let (live, mut fake) = test_live().await;
-        fake.expect(Request::ListFlock).answer_error("no shepherd");
+        fake.expect(Request::ListFlock)
+            .answer_wrong_shape("no shepherd");
         assert!(ShepCommand.suggestions(&live, "").await.is_empty());
     }
 

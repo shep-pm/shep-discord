@@ -82,7 +82,7 @@ impl Fake {
 }
 
 /// The half of `fake.expect(request)` waiting on `.answer(response)` or
-/// `.answer_error(reason)`.
+/// `.answer_wrong_shape(reason)`.
 pub struct Armed<'a> {
     fake: &'a mut Fake,
     request: Request,
@@ -97,14 +97,20 @@ impl Armed<'_> {
     /// the request it asked, so it comes back an `Err` the way a shepherd
     /// that genuinely refused the request would.
     ///
-    /// `reason` names the scenario for the test reading it, not the wire:
-    /// this harness has no RPC-level error frame to send without pulling
-    /// in `tokio-util`'s framing and `shep_core`'s wire internals for one
+    /// Named for what it does rather than for the scenario it stands in
+    /// for: it answers `Response::Pong`, a response shaped wrong for
+    /// every request but `Ping` itself, not a wire-level RPC error. A
+    /// name that only made sense next to this doc comment was worse than
+    /// no name at all, since the next caller reads the name before the
+    /// comment. `reason` documents the scenario a test is reaching for
+    /// (a test bug, not a wire fact); it is not sent anywhere. A real
+    /// RPC-level error frame is out of reach here without pulling in
+    /// `tokio-util`'s framing and `shep_core`'s wire internals for one
     /// test's sake, and every `Live` method already turns any response
     /// shaped wrong for its own request into [`crate::error::Error::Unexpected`],
     /// which is indistinguishable, from the caller's side, from a real
     /// refusal.
-    pub fn answer_error(self, _reason: &str) {
+    pub fn answer_wrong_shape(self, _reason: &str) {
         self.answer(Response::Pong);
     }
 }
