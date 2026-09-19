@@ -43,7 +43,7 @@
 use core::fmt;
 
 use shep_client::{
-    EventStream, LinkState, ReconnectingClient,
+    EventStream, LinkLost, LinkState, ReconnectingClient,
     shep_core::protocol::{HostUsage, ProcessInfo, Request, Response, SelectorSpec, SheepRefusal},
 };
 
@@ -222,6 +222,32 @@ impl Live {
             Response::Restarted { accepted, refused } => Ok(walked(verb_word, &accepted, &refused)),
             other => Err(unexpected("a Restarted", &other)),
         }
+    }
+
+    /// Wait until the client's supervisor is on a connection again, for
+    /// at most `budget`, returning at once when it already is.
+    ///
+    /// What a caller needing a fresh [`EventStream`] after a handover
+    /// waits on, and the only reason this crate looks at the link other
+    /// than to notice a refusal. An [`EventStream`] belongs to one
+    /// connection generation and is not re-armed across a reconnect, so a
+    /// subscription ending is how this dog learns the shepherd handed
+    /// over; resubscribing immediately would fail at once against the
+    /// dead generation, and sleeping a fixed interval instead would mean
+    /// a silent hole in the log channel for as long as that interval.
+    ///
+    /// An `Ok` is where to try again, never a promise the next subscribe
+    /// works: the supervisor can still report `Connected` for the moment
+    /// between a socket dying and it waking, and a fresh connection can
+    /// die immediately after. The caller asks, and comes back here if it
+    /// has budget left.
+    ///
+    /// # Errors
+    /// [`LinkLost::Refused`] when a successor refused on protocol-version
+    /// skew, which no later wait can fix, and [`LinkLost::Budget`] when
+    /// `budget` ran out with the supervisor still dialling.
+    pub async fn connected_within(&self, budget: core::time::Duration) -> Result<(), LinkLost> {
+        self.0.connected_within(budget).await
     }
 
     /// Subscribe this connection to bus topics.

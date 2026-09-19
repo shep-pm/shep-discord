@@ -55,7 +55,10 @@ pub mod state;
 
 use core::fmt;
 
-use shep_client::shep_core::protocol::{BusEvent, ProcessEventKind};
+use shep_client::{
+    LinkLost,
+    shep_core::protocol::{BusEvent, ProcessEventKind},
+};
 
 use crate::{
     bot::monitor::watch,
@@ -161,9 +164,29 @@ pub trait Sink {
 /// select would make of it. See this module's own doc for why a stop never
 /// drains what `state` is still holding.
 ///
+/// # How a shepherd handover is survived
+///
+/// An [`shep_client::EventStream`] belongs to one connection generation
+/// and is not re-armed across a reconnect, so the subscription simply
+/// ending is how this dog learns the shepherd handed over. This function
+/// used to return there, which left `main`'s own loop to notice on its
+/// next pass: a flat [`RESUBSCRIBE_BUDGET`]'s worth of silence in the log
+/// channel with nothing printed to say why, and twice that if the
+/// reconnect outlasted one cycle. shep does not replay the bus, so every
+/// line emitted in that window was gone for good.
+///
+/// It now waits on [`Live::connected_within`] and subscribes again on the
+/// fresh generation. Two things fall out of staying in this function
+/// rather than returning: [`state::State`] keeps its buffers, so lines
+/// queued when the connection went are flushed after it comes back rather
+/// than dropped, and the reconnect is announced on stderr instead of
+/// being silent. Giving up after the budget returns `Ok`, handing the
+/// retry back to `main`'s loop, which also rereads `dogs.toml` on its way
+/// round.
+///
 /// # Errors
-/// [`Error`] if the initial subscription request fails. Nothing after that
-/// point is fatal: a failed flush drops its own batch per
+/// [`Error`] if a subscription request fails, the first or a later one.
+/// Nothing else is fatal: a failed flush drops its own batch per
 /// [`state::State::flush`], and a failed muster-roll read on a `process.*`
 /// event is printed and simply leaves the name cache as it was until the
 /// next one succeeds.
@@ -176,63 +199,166 @@ pub async fn run<S: Sink>(
     monitor: Option<&watch::Wired>,
     stop: &mut Stop,
 ) -> Result<(), Error> {
-    let mut events = live
-        .subscribe(vec![
-            "log.out".to_owned(),
-            "log.err".to_owned(),
-            "process.start".to_owned(),
-            "process.delete".to_owned(),
-            "process.stop".to_owned(),
-            "process.online".to_owned(),
-            "process.exit".to_owned(),
-            "process.restart".to_owned(),
-        ])
-        .await?;
-
     let mut state = State::from_config(own_id, names, config, sink);
     let mut ticker = tokio::time::interval(config.flush.as_duration());
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // The first tick fires immediately; nothing is queued yet, so it costs
     // nothing to let it fall on the same schedule as every later one.
 
-    loop {
-        tokio::select! {
-            biased;
-            () = stop.wait() => return Ok(()),
-            _ = ticker.tick() => state.flush().await,
-            event = events.next() => match event {
-                None => return Ok(()),
-                Some(Err(lagged)) => state.on_lagged(lagged),
-                Some(Ok(BusEvent::Process { event, info, .. })) => {
-                    // The roll is reread only for the two events that
-                    // change which sheep exist; the other four change a
-                    // sheep's state, and its name with it stays what the
-                    // last read said.
-                    if matches!(event, ProcessEventKind::Start | ProcessEventKind::Delete) {
-                        match live.flock().await {
-                            Ok(roll) => state.refresh_names(&roll),
-                            Err(err) => eprintln!("shep-discord: {err}"),
+    'generation: loop {
+        let mut events = live.subscribe(topics()).await?;
+
+        loop {
+            tokio::select! {
+                biased;
+                () = stop.wait() => return Ok(()),
+                _ = ticker.tick() => state.flush().await,
+                event = events.next() => match event {
+                    None => {
+                        eprintln!("{}", subscription_ended_message());
+                        match wait_for_successor(live, stop).await {
+                            Successor::Ready => continue 'generation,
+                            Successor::Stopped => return Ok(()),
+                            Successor::GaveUp(err) => {
+                                eprintln!("{}", no_successor_message(&err));
+                                return Ok(());
+                            }
                         }
                     }
-                    if let Some(wired) = monitor {
-                        wired.on_process_event(event, &info).await;
+                    Some(Err(lagged)) => state.on_lagged(lagged),
+                    Some(Ok(BusEvent::Process { event, info, .. })) => {
+                        // The roll is reread only for the two events that
+                        // change which sheep exist; the other four change a
+                        // sheep's state, and its name with it stays what the
+                        // last read said.
+                        if matches!(event, ProcessEventKind::Start | ProcessEventKind::Delete) {
+                            match live.flock().await {
+                                Ok(roll) => state.refresh_names(&roll),
+                                Err(err) => eprintln!("shep-discord: {err}"),
+                            }
+                        }
+                        if let Some(wired) = monitor {
+                            wired.on_process_event(event, &info).await;
+                        }
                     }
-                }
-                Some(Ok(bus_event)) => state.on_event(bus_event),
-            },
+                    Some(Ok(bus_event)) => state.on_event(bus_event),
+                },
+            }
         }
     }
+}
+
+/// The bus topics this dog subscribes to, named once because a handover
+/// subscribes again with exactly the same list.
+fn topics() -> Vec<String> {
+    [
+        "log.out",
+        "log.err",
+        "process.start",
+        "process.delete",
+        "process.stop",
+        "process.online",
+        "process.exit",
+        "process.restart",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+/// How long [`run`] waits for a successor shepherd before handing the
+/// retry back to `main`'s own loop.
+///
+/// The same length as that loop's own recheck interval, so giving up here
+/// costs no more than the cycle it hands back to, and waiting here rather
+/// than there is what turns a silent gap into a resubscribe the moment the
+/// successor is up.
+const RESUBSCRIBE_BUDGET: core::time::Duration = core::time::Duration::from_secs(30);
+
+/// What waiting for a successor shepherd came to.
+enum Successor {
+    /// The supervisor is on a connection again. Subscribe.
+    Ready,
+    /// A stop was requested while waiting.
+    Stopped,
+    /// No connection inside [`RESUBSCRIBE_BUDGET`], or a refusal that no
+    /// later wait could fix.
+    GaveUp(LinkLost),
+}
+
+/// Wait for the client's supervisor to be on a connection again, or for a
+/// stop, whichever comes first.
+///
+/// Biased on the stop, the same shape as every other wait in this dog: an
+/// operator pressing ctrl-c during a handover should not sit through the
+/// rest of the budget.
+async fn wait_for_successor(live: &Live, stop: &mut Stop) -> Successor {
+    tokio::select! {
+        biased;
+        () = stop.wait() => Successor::Stopped,
+        outcome = live.connected_within(RESUBSCRIBE_BUDGET) => match outcome {
+            Ok(()) => Successor::Ready,
+            Err(err) => Successor::GaveUp(err),
+        },
+    }
+}
+
+/// What is printed when the bus subscription ends.
+///
+/// A function rather than an inline `eprintln!`, the same reason every
+/// other person-facing string in this crate is one: it lets the dash check
+/// reach the text. Printed at all because the silence was half the defect:
+/// an operator watching a log channel go quiet had nothing anywhere saying
+/// the shepherd had handed over.
+fn subscription_ended_message() -> &'static str {
+    "shep-discord: the bus subscription ended, which is how a shepherd handover looks from here. \
+     Waiting for the successor before subscribing again; log lines emitted in the meantime are \
+     not replayed, and shep logs still has them."
+}
+
+/// What is printed when no successor arrived inside the budget.
+fn no_successor_message(err: &LinkLost) -> String {
+    format!(
+        "shep-discord: no successor shepherd to subscribe to: {err}. The run loop will try again \
+         on its next pass."
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The one string this file prints for a person: [`SinkError`]'s
-    /// `Display`. [`state`]'s own tests carry the dash check for the
-    /// strings that live there.
+    /// Everything this file prints for a person. [`state`]'s own tests
+    /// carry the dash check for the strings that live there.
     #[test]
     fn nothing_printed_for_a_person_carries_a_dash() {
         crate::test_support::assert_no_dashes(&SinkError::BadRequest.to_string());
+        crate::test_support::assert_no_dashes(subscription_ended_message());
+        crate::test_support::assert_no_dashes(&no_successor_message(&LinkLost::Budget {
+            waited: RESUBSCRIBE_BUDGET,
+        }));
+    }
+
+    /// Every topic is subscribed again after a handover, because the
+    /// resubscribe reads the same list the first subscribe did. A second
+    /// hand-written list would be one `process.*` topic away from a
+    /// monitor that stops redrawing after the first shepherd restart.
+    #[test]
+    fn a_resubscribe_asks_for_the_same_topics_as_the_first_one() {
+        let topics = topics();
+        assert_eq!(
+            topics,
+            vec![
+                "log.out",
+                "log.err",
+                "process.start",
+                "process.delete",
+                "process.stop",
+                "process.online",
+                "process.exit",
+                "process.restart",
+            ],
+            "the log topics the stream reads and the six process topics the monitor redraws on"
+        );
     }
 }
