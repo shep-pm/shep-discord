@@ -638,26 +638,57 @@ mod tests {
     }
 
     /// The mirror of the same staleness, on the deleting side: a sheep
-    /// first drawn by a bus event while a refresh was in flight is in the
-    /// cache but in neither of that refresh's own readings, and must not
-    /// be swept away as departed. Driven through [`Monitor::sweep`] with
-    /// the empty list a refresh that started before sheep 2 existed would
-    /// have captured.
+    /// first drawn while a refresh is in flight is in the cache by the
+    /// time the sweep runs, but in neither of that refresh's own
+    /// readings, and its brand new message must survive.
+    ///
+    /// Driven through `update_all` against a real interleaving, because
+    /// the claim is about WHEN `already_drawn` is read and nothing else.
+    /// An earlier version of this test called `sweep` with two empty
+    /// slices, which `departed` answers with the empty vector for every
+    /// implementation, correct or broken: it asserted nothing and
+    /// duplicated `only_the_cached_sheep_missing_from_the_flock_are_departed`
+    /// below.
+    ///
+    /// The ordering is forced by the suspension points rather than hoped
+    /// for. `tokio::join!` polls the refresh first, which captures its two
+    /// readings synchronously and then suspends on the muster-roll round
+    /// trip; the draw beside it then runs to completion, because
+    /// `CountingChannel` yields once per call while the socket takes
+    /// longer than that. So sheep 2 is in the cache, and not in the roll,
+    /// by the time the sweep decides anything.
+    ///
+    /// The regression it exists for: reading `already_drawn` from a live
+    /// `self.drawn()` after the drawing loop rather than before
+    /// `live.flock()`. That mutation deletes sheep 2's message here, and
+    /// no other test in this file notices it.
     #[tokio::test]
-    async fn a_sheep_drawn_after_the_snapshot_is_not_swept_away() {
+    async fn a_sheep_drawn_during_a_refresh_is_not_swept_away_by_it() {
+        let (live, mut fake) = test_live().await;
         let monitor = Monitor::new();
         let sink = CountingChannel::new();
-        monitor
-            .update_one(&sink, &info(2, "api"))
-            .await
-            .expect("ok");
+        let names = Mutex::new(Names::new());
 
-        monitor.sweep(&sink, &[], &[]).await;
+        fake.expect(Request::ListFlock)
+            .answer(Response::Flock(vec![info(1, "web")]));
+        let api = info(2, "api");
+        let (refreshed, drawn) = tokio::join!(
+            monitor.update_all(&sink, &live, &names, false),
+            monitor.update_one(&sink, &api),
+        );
+        refreshed.expect("ok");
+        drawn.expect("ok");
 
         assert_eq!(
             sink.deletes(),
             0,
-            "sheep 2 was drawn after this refresh's own snapshot"
+            "sheep 2 was drawn after this refresh read which sheep it had messages for, so the \
+             refresh knows nothing about it and must not sweep it away"
+        );
+        assert_eq!(
+            sink.sends(),
+            2,
+            "one message each: the sheep in the roll and the sheep drawn beside it"
         );
     }
 
