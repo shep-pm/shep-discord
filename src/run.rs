@@ -261,8 +261,8 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // The name cache the gateway, the monitor's own refresh and the log
     // stream all read; owned here for the same reason `monitor` is.
     let names = Arc::new(Mutex::new(Names::new()));
-    // Whether the boot start below has already had its one turn. See the
-    // comment there for why it is once rather than per cycle.
+    // Whether the boot start below has already had its one turn: it gets
+    // exactly one, and the comment at that call site has the why.
     let mut monitor_started = false;
     // `Some` while the gateway task is running; see the doc above for why
     // it starts once rather than on every cycle. Cleared back to `None`
@@ -345,8 +345,25 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         )));
                     }
 
-                    // Once, or a reread would restart a stopped monitor.
+                    // Started once, on the first cycle that resolves a
+                    // config asking for it, rather than on every cycle:
+                    // this loop rereads the same `dogs.toml` every
+                    // `RECHECK_INTERVAL`, and starting again there would
+                    // restart the monitor underneath an operator who had
+                    // just run `/monitor stop`. `monitor_interval` is what
+                    // says "run this from boot"; `/monitor start` is the
+                    // runtime override, and it says in its own reply that
+                    // it is not written anywhere.
                     if !monitor_started {
+                        // The ATTEMPT is what is recorded, not its
+                        // outcome. A start that found one already running
+                        // (an operator quicker with `/monitor start` than
+                        // this loop was to resolve a config) has still had
+                        // its turn, so recording only a successful start
+                        // would leave this flag false and let the next
+                        // cycle start a monitor the operator may have
+                        // stopped in between, which is the exact thing the
+                        // flag exists to prevent.
                         monitor_started = true;
                         bot::monitor::refresh::start_from_config(&monitor, &config, live, &names);
                     }
