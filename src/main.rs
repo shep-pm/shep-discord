@@ -306,7 +306,7 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // test that would otherwise exercise it. See `session::warn_once`.
     let mut unresolved_warned = false;
     // Outlive every cycle: a reconnect that lost the cached message ids
-    // would post a second embed beside each one already in the channel.
+    // would post a second embed beside each one in the channel.
     let monitor = Arc::new(bot::monitor::Monitor::new());
     let names = Arc::new(Mutex::new(Names::new()));
     let mut monitor_started = false;
@@ -391,22 +391,22 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         )));
                     }
 
-                    // Once, not per cycle: starting again on every reread
-                    // would restart a monitor an operator had stopped.
+                    // Once, or a reread would restart a stopped monitor.
                     if !monitor_started {
                         monitor_started = true;
                         bot::monitor::start_from_config(&monitor, &config, live, &names);
                     }
 
-                    // Streaming only when a channel names somewhere to send
-                    // to: an operator who never set `log_channel` or
-                    // `err_channel` gets no bus subscription spent on lines
-                    // nothing reads. This await does not return until that
+                    // Subscribing only when something reads the bus: the
+                    // log channels for the lines, `monitor_channel` for the
+                    // `process.*` events that redraw a sheep between
+                    // refreshes. This await does not return until the
                     // subscription ends or `stop` resolves, so it stands in
-                    // for this cycle's ordinary work for as long as it
-                    // runs; when it returns, the loop's own wait and
-                    // reconnect below try again.
-                    if config.log_channel.is_some() || config.err_channel.is_some() {
+                    // for this cycle's work; the wait below retries after.
+                    if config.log_channel.is_some()
+                        || config.err_channel.is_some()
+                        || config.monitor_channel.is_some()
+                    {
                         let handshake = identity.handshake.as_deref();
                         if let Err(err) = session::stream_once(
                             live,
