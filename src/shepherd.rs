@@ -343,7 +343,7 @@ fn describe_selector(selector: &SelectorSpec) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{sample, test_live};
+    use crate::test_support::{assert_no_dashes, sample, test_live};
     use shep_client::{ReconnectingClient, testing};
 
     #[tokio::test]
@@ -573,5 +573,144 @@ mod tests {
             !shown.contains(&socket.display().to_string()),
             "the socket path leaked: {shown}"
         );
+    }
+    /// Every sentence `act` hands back reaches a Discord followup through
+    /// `reply_content`, so this module is a person-facing string module
+    /// as much as the command modules are, and until now nothing here
+    /// swept for a dash. Six of the nine `/shep` subcommands answer with
+    /// one of these.
+    ///
+    /// One pass per verb rather than one assertion bolted onto each of
+    /// the per-verb tests above: those assert the exact sentence, which
+    /// is the stronger check and stays, while this one exists to still
+    /// cover a verb added later whose own test somebody forgets to sweep.
+    /// The refusal branch is included because it interpolates the
+    /// shepherd's own words, and the empty list because "no sheep" is a
+    /// literal of this module's like any other.
+    #[tokio::test]
+    async fn no_sentence_act_hands_back_carries_a_dash() {
+        let (live, mut fake) = test_live().await;
+        let web = SelectorSpec::Name("web".to_owned());
+        let answers = [
+            (
+                Verb::Start,
+                Request::Restart {
+                    selector: web.clone(),
+                },
+                Response::Restarted {
+                    accepted: vec![sample("web")],
+                    refused: Vec::new(),
+                },
+            ),
+            (
+                Verb::Restart,
+                Request::Restart {
+                    selector: web.clone(),
+                },
+                Response::Restarted {
+                    accepted: vec![sample("web")],
+                    refused: vec![SheepRefusal::new("worker", "exceeded restart budget")],
+                },
+            ),
+            (
+                Verb::Reload,
+                Request::Reload {
+                    selector: web.clone(),
+                },
+                Response::Reloading {
+                    accepted: Vec::new(),
+                    refused: vec![SheepRefusal::new("worker", "no reload signal configured")],
+                },
+            ),
+            (
+                Verb::Stop,
+                Request::Stop {
+                    selector: web.clone(),
+                },
+                Response::Stopped(vec![sample("web")]),
+            ),
+            (
+                Verb::Delete,
+                Request::Delete {
+                    selector: web.clone(),
+                },
+                Response::Deleted(vec![7]),
+            ),
+            (
+                Verb::Flush,
+                Request::Flush {
+                    selector: web.clone(),
+                },
+                Response::Flushed(Vec::new()),
+            ),
+            (
+                Verb::Reopen,
+                Request::Reopen {
+                    selector: web.clone(),
+                },
+                Response::Reopened(vec![sample("web")]),
+            ),
+            (
+                Verb::Save,
+                Request::SaveRoll,
+                Response::RollSaved {
+                    path: "/var/lib/shep/roll.json".to_owned(),
+                    apps: 3,
+                },
+            ),
+        ];
+
+        for (verb, asked, answer) in answers {
+            fake.expect(asked).answer(answer);
+            let reply = live.act(verb, web.clone()).await.expect("ok");
+            assert_no_dashes(&reply);
+        }
+    }
+
+    /// The other two person-facing shapes this module builds: what a
+    /// selector is called when the shepherd's reply carries no name, and
+    /// what an unexpected response is called in the error a Discord
+    /// followup prints through `report_failure`.
+    #[test]
+    fn nothing_this_module_names_for_a_person_carries_a_dash() {
+        for selector in [
+            SelectorSpec::All,
+            SelectorSpec::Id(7),
+            SelectorSpec::Name("web".to_owned()),
+            SelectorSpec::Fold("prod".to_owned()),
+            SelectorSpec::Regex("^web".to_owned()),
+            SelectorSpec::Instance {
+                name: "web".to_owned(),
+                slot: 2,
+            },
+        ] {
+            assert_no_dashes(&describe_selector(&selector));
+        }
+
+        for response in [
+            Response::Pong,
+            Response::Flock(vec![sample("web")]),
+            Response::HostUsage(None),
+            Response::Described(vec![sample("web")]),
+            Response::Stopped(vec![sample("web")]),
+            Response::Restarted {
+                accepted: vec![sample("web")],
+                refused: Vec::new(),
+            },
+            Response::Reloading {
+                accepted: vec![sample("web")],
+                refused: Vec::new(),
+            },
+            Response::Deleted(vec![7]),
+            Response::Flushed(vec![sample("web")]),
+            Response::Reopened(vec![sample("web")]),
+            Response::RollSaved {
+                path: "/var/lib/shep/roll.json".to_owned(),
+                apps: 3,
+            },
+        ] {
+            assert_no_dashes(&named(&response));
+        }
+        assert_no_dashes(&name_list(&[]));
     }
 }

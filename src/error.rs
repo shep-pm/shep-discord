@@ -91,3 +91,36 @@ impl From<serenity::Error> for Error {
         Self::Discord(Box::new(err))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::assert_no_dashes;
+
+    /// Every arm of this enum reaches a Discord followup, through
+    /// `bot::interaction::report_failure`, and reaches a terminal through
+    /// the run loop's own `eprintln!`. That makes all five person-facing
+    /// strings, and this module had no test at all until now.
+    ///
+    /// The three wrapping arms are built from a real inner error rather
+    /// than a stand-in, since what they interpolate is the other crate's
+    /// wording as much as this one's: a dash arriving from `shep_client`
+    /// or from serenity prints exactly the same replacement character in
+    /// exactly the same place.
+    #[test]
+    fn no_arm_of_this_enum_carries_a_dash_when_it_is_printed() {
+        let errors = [
+            Error::Connect(shep_client::ConnectError::HandshakeClosed),
+            Error::Request(shep_client::RequestError::Closed),
+            Error::Unexpected {
+                asked: "a Flock".to_owned(),
+                got: "a Pong".to_owned(),
+            },
+            Error::Config("token is required".to_owned()),
+            Error::Discord(Box::new(serenity::Error::Other("refused"))),
+        ];
+        for err in &errors {
+            assert_no_dashes(&err.to_string());
+        }
+    }
+}

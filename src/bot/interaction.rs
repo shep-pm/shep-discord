@@ -473,8 +473,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nothing_printed_for_a_person_carries_a_dash() {
-        crate::test_support::assert_no_dashes(unknown_component_reply());
+    /// Both what a person is told and what is printed beside it.
+    ///
+    /// The followup `report_failure` builds is the one an operator reads
+    /// when a command fails, and its own literal was checked only for
+    /// length until now. It is swept here through `report_failure`
+    /// itself rather than against a copy of the format string, so a
+    /// reworded sentence is covered without the test being edited.
+    #[tokio::test]
+    async fn nothing_printed_for_a_person_carries_a_dash() {
+        use crate::test_support::assert_no_dashes;
+
+        assert_no_dashes(unknown_component_reply());
+
+        let err = Error::Config("a value in dogs.toml".to_owned());
+        let responder = RecordingResponder::default();
+        let lines = report_failure("system", Err(err), &responder).await;
+        for line in &lines {
+            assert_no_dashes(line);
+        }
+        assert_no_dashes(&responder.seen().expect("report_failure told the user"));
+        assert_no_dashes(&command_failed_message(
+            "system",
+            &Error::Config("a value in dogs.toml".to_owned()),
+        ));
+        assert_no_dashes(&could_not_tell_the_user_message(
+            "an unknown button",
+            &Error::Config("the followup itself failed".to_owned()),
+        ));
     }
 }

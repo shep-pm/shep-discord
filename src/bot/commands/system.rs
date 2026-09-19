@@ -210,8 +210,35 @@ mod tests {
         assert_eq!(names, vec!["CPU", "Memory"]);
     }
 
+    /// The whole rendered embed, not one sentence of it.
+    ///
+    /// `not_sampling_message` was all this reached, which left every
+    /// field name, `rate_value`'s four words and "not yet sampled"
+    /// unswept, though all of them are drawn in a Discord embed an
+    /// operator reads. The registration payload is swept the same way,
+    /// since the subcommand descriptions are read in Discord's own UI.
     #[test]
     fn nothing_printed_for_a_person_carries_a_dash() {
-        crate::test_support::assert_no_dashes(not_sampling_message());
+        use crate::test_support::{assert_no_dashes, assert_no_dashes_deep};
+
+        assert_no_dashes(not_sampling_message());
+        assert_no_dashes_deep(&json(render(None)));
+        assert_no_dashes_deep(&json(render(Some(HostUsage {
+            cpu_percent: Some(12.5),
+            memory_used_bytes: 512 << 20,
+            memory_total_bytes: 4 << 30,
+            disk_bytes_per_second: Some((1 << 20, 2 << 20)),
+            network_bytes_per_second: Some((3 << 10, 4 << 10)),
+        }))));
+        // The one field with a second rendering, drawn when the shepherd
+        // has a reading for everything else but not for the CPU.
+        assert_no_dashes_deep(&json(render(Some(HostUsage {
+            cpu_percent: None,
+            memory_used_bytes: 1 << 20,
+            memory_total_bytes: 2 << 20,
+            disk_bytes_per_second: None,
+            network_bytes_per_second: None,
+        }))));
+        assert_no_dashes_deep(&serde_json::to_value(System.data()).expect("json"));
     }
 }
