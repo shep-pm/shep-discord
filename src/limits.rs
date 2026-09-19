@@ -45,6 +45,13 @@ pub const FIELD_VALUE_LIMIT: usize = 1024;
 /// `field.value`, `footer.text` and `author.name`. Discord's own limit.
 pub const MESSAGE_CHARACTER_BUDGET: usize = 6000;
 
+/// The most embeds one message may carry. Discord's own limit, and a count
+/// rather than a length, but it belongs beside [`MESSAGE_CHARACTER_BUDGET`]
+/// for the same reason: a packer that only watches the character sum can
+/// still stack eleven small embeds onto one message and take a 400 for the
+/// count alone, the same shape of gap a length-only check would leave.
+pub const EMBED_MAX_COUNT: usize = 10;
+
 /// The longest a message's own `content` field may be, separate from
 /// anything an embed carries. Discord's own limit, and the sixth of its
 /// length limits this port has run into: an error's `Display` is

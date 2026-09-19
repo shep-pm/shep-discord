@@ -90,41 +90,69 @@ pub fn chunks(group: &Group) -> Vec<Chunk> {
         .collect()
 }
 
-/// Group `chunks` into messages, each under [`MESSAGE_CHARACTER_BUDGET`].
+/// Group `items` into batches, each summing to at most `budget` under
+/// `size` and holding at most `max_count` items.
 ///
-/// Walks the chunks in order, keeping a running sum of
-/// `title.chars().count() + description.chars().count()` for the message
-/// being built, and starts a new message rather than let the next chunk
-/// push that sum over budget. A single chunk can never exceed the budget on
-/// its own: it is [`chunks`] that establishes this, by capping every title
-/// at [`EMBED_TITLE_LIMIT`] and every description at
-/// [`EMBED_DESCRIPTION_LIMIT`], so `256 + 4096 = 4352 < 6000` and every
-/// chunk always finds room in a message of its own even in the degenerate
-/// case where it shares one with nothing else. This function has no
-/// guard of its own for a chunk over budget, because [`chunks`] is the
-/// only place `Chunk` values are built and it never produces one.
+/// Walks `items` in order, keeping a running sum of `size` for the batch
+/// being built, and starts a new batch rather than let the next item push
+/// that sum over `budget` or that batch's own length past `max_count`.
+/// This is the one packer behind two callers that both answer to the same
+/// Discord rule, a message's real budget is a sum and a count across
+/// everything on it, never a property of one item alone:
+/// [`into_messages`] below, packing this module's own [`Chunk`]s onto a
+/// log message, and [`crate::bot::commands::shep`]'s `/shep list`, packing
+/// one embed per sheep onto an interaction followup. A second hand-rolled
+/// walk here was already the wrong fix once, in the old code's own
+/// ten-embed cap that counted embeds and never their characters; this
+/// keeps there being only one.
 #[must_use]
-pub fn into_messages(chunks: Vec<Chunk>) -> Vec<Vec<Chunk>> {
-    let mut messages: Vec<Vec<Chunk>> = Vec::new();
+pub fn pack_by_budget<T>(
+    items: Vec<T>,
+    budget: usize,
+    max_count: usize,
+    size: impl Fn(&T) -> usize,
+) -> Vec<Vec<T>> {
+    let mut batches: Vec<Vec<T>> = Vec::new();
     let mut current_total = 0usize;
 
-    for chunk in chunks {
-        let chunk_size = chunk.title.chars().count() + chunk.description.chars().count();
-        let fits_current =
-            messages.last().is_some() && current_total + chunk_size <= MESSAGE_CHARACTER_BUDGET;
+    for item in items {
+        let item_size = size(&item);
+        let current = batches.last();
+        let fits_current = current
+            .is_some_and(|batch| batch.len() < max_count && current_total + item_size <= budget);
         if fits_current {
-            current_total += chunk_size;
+            current_total += item_size;
         } else {
-            messages.push(Vec::new());
-            current_total = chunk_size;
+            batches.push(Vec::new());
+            current_total = item_size;
         }
-        messages
-            .last_mut()
-            .expect("just pushed if empty")
-            .push(chunk);
+        batches.last_mut().expect("just pushed if empty").push(item);
     }
 
-    messages
+    batches
+}
+
+/// Group `chunks` into messages, each under [`MESSAGE_CHARACTER_BUDGET`].
+///
+/// [`pack_by_budget`] does the walking; this hands it the character count
+/// [`chunks`] guarantees stays under budget for a single chunk (see below)
+/// and Discord's own [`crate::limits::EMBED_MAX_COUNT`], the count cap a
+/// log message runs into far less often than `/shep list` does, since a
+/// busy sheep usually fills a message on characters alone long before it
+/// reaches ten chunks. A single chunk can never exceed the budget on its
+/// own: it is [`chunks`] that establishes this, by capping every title at
+/// [`EMBED_TITLE_LIMIT`] and every description at
+/// [`EMBED_DESCRIPTION_LIMIT`], so `256 + 4096 = 4352 < 6000` and every
+/// chunk always finds room in a message of its own even in the degenerate
+/// case where it shares one with nothing else.
+#[must_use]
+pub fn into_messages(chunks: Vec<Chunk>) -> Vec<Vec<Chunk>> {
+    pack_by_budget(
+        chunks,
+        MESSAGE_CHARACTER_BUDGET,
+        limits::EMBED_MAX_COUNT,
+        |chunk| chunk.title.chars().count() + chunk.description.chars().count(),
+    )
 }
 
 /// Strip ANSI CSI escape sequences from `text`.
