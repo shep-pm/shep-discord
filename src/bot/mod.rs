@@ -112,7 +112,12 @@ pub async fn run(config: Arc<Config>, state: command::State, mut stop: Stop) {
 /// shutdown finished, rather than being torn down the moment `stop.wait()`
 /// wins the outer `select!`, which is a different shape of loop than
 /// `run`'s.
-async fn run_once(config: &Config, state: command::State) -> Result<(), serenity::Error> {
+/// The error is boxed for the reason [`command::register`]'s is: a bare
+/// `serenity::Error` is 136 bytes, and [`crate::error::Error`] already
+/// keeps its own copy behind a `Box`. `gateway_attempt_ended_message`
+/// still takes a `&serenity::Error`, since a `&Box<serenity::Error>`
+/// derefs to one at the call.
+async fn run_once(config: &Config, state: command::State) -> Result<(), Box<serenity::Error>> {
     // `GUILDS` alone, no `GUILD_MESSAGES`: a slash command interaction
     // arrives over the gateway regardless of intent, since it is Discord
     // asking this bot to act rather than a message this bot would have to
@@ -128,7 +133,9 @@ async fn run_once(config: &Config, state: command::State) -> Result<(), serenity
     let mut client = Client::builder(&config.token, GatewayIntents::GUILDS)
         .event_handler(handler)
         .await?;
-    client.start().await
+    // `?` rather than returning the call, so the `Box` this signature
+    // now promises is built by `From`. See the signature for why it is one.
+    Ok(client.start().await?)
 }
 
 #[cfg(test)]

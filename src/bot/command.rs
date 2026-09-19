@@ -166,11 +166,19 @@ pub fn registry() -> Vec<Box<dyn Command>> {
 /// # Errors
 /// Whatever `GuildId::set_commands` returns: an invalid token, a payload
 /// the guild refuses, or the request itself failing.
+///
+/// Boxed, because `serenity::Error` is 136 bytes and every `Ok` from this
+/// function would carry room for one. That is the same call
+/// [`crate::error::Error`] already made for its own `Discord` variant,
+/// which holds a `Box<serenity::Error>` rather than the error itself, so
+/// boxing here makes this signature agree with the rest of the crate
+/// rather than making an exception for it. `?` builds the box on its own
+/// through the blanket `From<T> for Box<T>`, so no call site spells it.
 pub async fn register(
     http: &Http,
     guild_id: GuildId,
     commands: &[Box<dyn Command>],
-) -> Result<Vec<String>, serenity::Error> {
+) -> Result<Vec<String>, Box<serenity::Error>> {
     let payload: Vec<CreateCommand> = commands.iter().map(|command| command.data()).collect();
     let registered = guild_id.set_commands(http, payload).await?;
     Ok(registered.into_iter().map(|command| command.name).collect())
