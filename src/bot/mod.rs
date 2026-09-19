@@ -33,7 +33,8 @@ use crate::{
 
 /// How long a failed gateway connection attempt waits before the next one.
 ///
-/// The same order as `main`'s own [`crate::RECHECK_INTERVAL`] for the
+/// The same order as the run loop's own [`crate::run::RECHECK_INTERVAL`]
+/// for the
 /// streaming side, and for the same reason: short enough that an operator
 /// watching this dog's own output is not left wondering for long, long
 /// enough not to hammer Discord's own gateway on a token or network
