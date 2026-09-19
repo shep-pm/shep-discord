@@ -148,30 +148,6 @@ impl Live {
         }
     }
 
-    /// Detailed info for the sheep named `name`.
-    ///
-    /// A name can match more than one row when an app is scaled to several
-    /// instances; this hands back the first and drops the rest, because a
-    /// Discord command asking about one sheep by name wants one answer. A
-    /// caller that needs every instance reads [`Self::flock`] and filters
-    /// it instead.
-    ///
-    /// # Errors
-    /// As [`Self::section`].
-    #[allow(
-        dead_code,
-        reason = "no caller: every command that wants one sheep is handed it already, /shep by name through Live::act and the monitor by the ProcessInfo a bus event carries. Named as a fact rather than as a task that will reach it, because Task 13 was the last feature task and the prediction would not come true"
-    )]
-    pub async fn describe(&self, name: &str) -> Result<Option<ProcessInfo>, Error> {
-        let asked = Request::Describe {
-            selector: SelectorSpec::Name(name.to_owned()),
-        };
-        match self.0.request(asked).await? {
-            Response::Described(sheep) => Ok(sheep.into_iter().next()),
-            other => Err(unexpected("a Described", &other)),
-        }
-    }
-
     /// What the machine the flock runs on is doing right now.
     ///
     /// `None` where the shepherd cannot sample its own host at all, which is
@@ -533,28 +509,6 @@ mod tests {
         });
         let toml = live.section("discord").await.expect("ok");
         assert_eq!(toml, "flush = \"1s\"\n");
-    }
-
-    #[tokio::test]
-    async fn describe_answers_the_first_matching_instance() {
-        let (live, mut fake) = test_live().await;
-        fake.expect(Request::Describe {
-            selector: SelectorSpec::Name("web".to_owned()),
-        })
-        .answer(Response::Described(vec![sample("web")]));
-        let found = live.describe("web").await.expect("ok");
-        assert_eq!(found, Some(sample("web")));
-    }
-
-    #[tokio::test]
-    async fn describe_answers_none_for_no_match() {
-        let (live, mut fake) = test_live().await;
-        fake.expect(Request::Describe {
-            selector: SelectorSpec::Name("ghost".to_owned()),
-        })
-        .answer(Response::Described(Vec::new()));
-        let found = live.describe("ghost").await.expect("ok");
-        assert_eq!(found, None);
     }
 
     #[tokio::test]
