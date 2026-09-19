@@ -129,6 +129,13 @@ fn bare_subcommand(name: &str, description: &str) -> CreateCommandOption {
     CreateCommandOption::new(CommandOptionType::SubCommand, name, description)
 }
 
+/// The stderr line printed when Discord refused an autocomplete
+/// response. Nothing is shown to the operator typing, who simply gets no
+/// suggestions, so this line is the only trace it leaves.
+fn autocomplete_failed_message(err: &serenity::Error) -> String {
+    format!("shep-discord: /shep autocomplete failed: {err}")
+}
+
 /// The text shown when a listing has nothing to draw: every sheep this
 /// dog knows about is a dog itself, or the flock is empty.
 fn empty_flock_message() -> &'static str {
@@ -422,7 +429,7 @@ impl Command for ShepCommand {
                 .create_response(ctx, CreateInteractionResponse::Autocomplete(response))
                 .await
             {
-                eprintln!("shep-discord: /shep autocomplete failed: {err}");
+                eprintln!("{}", autocomplete_failed_message(&err));
             }
         })
     }
@@ -720,6 +727,9 @@ mod tests {
     #[test]
     fn nothing_printed_for_a_person_carries_a_dash() {
         crate::test_support::assert_no_dashes(empty_flock_message());
+        crate::test_support::assert_no_dashes(&autocomplete_failed_message(
+            &serenity::Error::Other("refused"),
+        ));
         // Walks every subcommand and sub-option description too, not just
         // this command's own top-level one: `no_registered_commands_json_carries_a_dash_at_any_depth`
         // in `bot::command` already sweeps the whole registry this way,

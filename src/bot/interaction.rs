@@ -138,6 +138,39 @@ impl Responder for ComponentResponder<'_> {
     }
 }
 
+/// The line printed when the slash commands reached the guild.
+fn registered_commands_message(names: &[String]) -> String {
+    format!(
+        "shep-discord: registered slash commands: {}",
+        names.join(", ")
+    )
+}
+
+/// The stderr line printed when Discord refused the whole registration
+/// payload, which takes every command in it down together. See
+/// [`crate::limits`] for why that is the failure this crate watches.
+fn could_not_register_message(err: &serenity::Error) -> String {
+    format!("shep-discord: could not register slash commands: {err}")
+}
+
+/// The stderr line printed when Discord refused the deferral of a slash
+/// command, which leaves nothing this dog can answer with.
+fn could_not_defer_command_message(name: &str, err: &serenity::Error) -> String {
+    format!("shep-discord: could not defer /{name}: {err}")
+}
+
+/// The stderr line printed when Discord sends an interaction for a
+/// command this build does not have.
+fn no_such_command_message(name: &str) -> String {
+    format!("shep-discord: no command named {name} is registered")
+}
+
+/// The stderr line printed when Discord refused the deferral of a button
+/// click.
+fn could_not_defer_button_message(err: &serenity::Error) -> String {
+    format!("shep-discord: could not defer a button: {err}")
+}
+
 /// The stderr line printed for a command or button that itself failed.
 fn command_failed_message(label: &str, err: &Error) -> String {
     format!("shep-discord: /{label} failed: {err}")
@@ -244,11 +277,8 @@ impl EventHandler for Handler {
     /// one after a long-lived reconnect would leave a stale set behind.
     async fn ready(&self, ctx: Context, _ready: Ready) {
         match command::register(&ctx.http, self.guild_id, &self.commands).await {
-            Ok(names) => println!(
-                "shep-discord: registered slash commands: {}",
-                names.join(", ")
-            ),
-            Err(err) => eprintln!("shep-discord: could not register slash commands: {err}"),
+            Ok(names) => println!("{}", registered_commands_message(&names)),
+            Err(err) => eprintln!("{}", could_not_register_message(&err)),
         }
     }
 
@@ -293,11 +323,11 @@ impl Handler {
     async fn handle_command(&self, ctx: &Context, interaction: &CommandInteraction) {
         let name = interaction.data.name.clone();
         if let Err(err) = interaction.defer_ephemeral(ctx).await {
-            eprintln!("shep-discord: could not defer /{name}: {err}");
+            eprintln!("{}", could_not_defer_command_message(&name, &err));
             return;
         }
         let Some(command) = self.find(&name) else {
-            eprintln!("shep-discord: no command named {name} is registered");
+            eprintln!("{}", no_such_command_message(&name));
             return;
         };
         let outcome = command.run(ctx, interaction, &self.state).await;
@@ -309,7 +339,7 @@ impl Handler {
 
     async fn handle_component(&self, ctx: &Context, interaction: &ComponentInteraction) {
         if let Err(err) = interaction.defer_ephemeral(ctx).await {
-            eprintln!("shep-discord: could not defer a button: {err}");
+            eprintln!("{}", could_not_defer_button_message(&err));
             return;
         }
         let responder = ComponentResponder { ctx, interaction };
@@ -501,5 +531,15 @@ mod tests {
             "an unknown button",
             &Error::Config("the followup itself failed".to_owned()),
         ));
+
+        let refused = serenity::Error::Other("refused");
+        assert_no_dashes(&registered_commands_message(&[
+            "system".to_owned(),
+            "shep".to_owned(),
+        ]));
+        assert_no_dashes(&could_not_register_message(&refused));
+        assert_no_dashes(&could_not_defer_command_message("shep", &refused));
+        assert_no_dashes(&no_such_command_message("shep"));
+        assert_no_dashes(&could_not_defer_button_message(&refused));
     }
 }

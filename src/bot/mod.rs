@@ -61,6 +61,15 @@ const GATEWAY_RETRY_INTERVAL: core::time::Duration = core::time::Duration::from_
 /// rather than propagated, on the reasoning above. [`run_once`] is the one
 /// place a single attempt's own failure surfaces, for this function to
 /// print.
+/// The stderr line printed when one gateway attempt ended.
+///
+/// A function rather than an inline `eprintln!`, the same rule
+/// `main` and the run loop follow: a person-facing string a test cannot
+/// reach is a string the dash sweep cannot check.
+fn gateway_attempt_ended_message(err: &serenity::Error) -> String {
+    format!("shep-discord: the gateway connection ended: {err}")
+}
+
 pub async fn run(config: Arc<Config>, state: command::State, mut stop: Stop) {
     loop {
         tokio::select! {
@@ -68,7 +77,7 @@ pub async fn run(config: Arc<Config>, state: command::State, mut stop: Stop) {
             () = stop.wait() => return,
             outcome = run_once(&config, state.clone()) => {
                 if let Err(err) = outcome {
-                    eprintln!("shep-discord: the gateway connection ended: {err}");
+                    eprintln!("{}", gateway_attempt_ended_message(&err));
                 }
             }
         }
@@ -120,4 +129,20 @@ async fn run_once(config: &Config, state: command::State) -> Result<(), serenity
         .event_handler(handler)
         .await?;
     client.start().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one string this module prints for a person. It was an inline
+    /// `eprintln!` until now, which is why no sweep reached it: a literal
+    /// inside a `select!` arm cannot be read by a test, and this module
+    /// had no test module at all as a result.
+    #[test]
+    fn nothing_printed_for_a_person_carries_a_dash() {
+        crate::test_support::assert_no_dashes(&gateway_attempt_ended_message(
+            &serenity::Error::Other("refused"),
+        ));
+    }
 }
