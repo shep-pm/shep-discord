@@ -80,7 +80,12 @@ impl Running {
 /// is still the only one [`start_from_config`] is ever handed.
 pub struct Refresh<B> {
     /// Where the monitor draws.
-    pub board: B,
+    ///
+    /// Shared rather than owned, because serenity's rate-limit buckets
+    /// live on the `Http` a real board holds. See [`super::watch::Wired`]
+    /// for the argument and [`crate::wiring`] for where the one board is
+    /// built.
+    pub board: Arc<B>,
     /// The shepherd session the flock is read from.
     pub live: Arc<Live>,
     /// Whether other dogs are left out of the monitor, from
@@ -98,10 +103,13 @@ impl<B: Board> Refresh<B> {
     /// because the two callers disagree about both: the boot start runs
     /// only when `dogs.toml` names an interval, while `/monitor start`
     /// falls back to the floor. What they agree on is what this reads.
+    /// `board` is also the only one the process has, so neither caller
+    /// gets to make a second; a [`Refresh`] is a schedule and making one
+    /// per start costs nothing.
     #[must_use]
-    pub fn new(board: B, config: &Config, interval: UpDuration, live: &Arc<Live>) -> Self {
+    pub fn new(board: &Arc<B>, config: &Config, interval: UpDuration, live: &Arc<Live>) -> Self {
         Self {
-            board,
+            board: Arc::clone(board),
             live: Arc::clone(live),
             ignore_dogs: config.ignore_dogs,
             interval: Duration::from_millis(interval.as_millis()),
@@ -171,6 +179,10 @@ pub fn start<B: Board + Send + Sync + 'static>(
             ignore_dogs,
             interval,
         } = refresh;
+        // Reborrowed once rather than deref'd at each of the three uses
+        // below: `Board` is a generic bound, so an `Arc<B>` does not
+        // coerce to a `&B` on its own.
+        let board: &B = &board;
 
         // Before the first draw, so a restart edits the messages the last
         // run left rather than posting a second one beside each of them.
@@ -198,7 +210,7 @@ pub fn start<B: Board + Send + Sync + 'static>(
             }
         };
         match board.me().await {
-            Ok(me) => match channel::rediscover(&board, me, &wanted).await {
+            Ok(me) => match channel::rediscover(board, me, &wanted).await {
                 Ok(found) => monitor.adopt(found),
                 Err(err) => eprintln!("shep-discord: {err}"),
             },
@@ -215,7 +227,7 @@ pub fn start<B: Board + Send + Sync + 'static>(
                 biased;
                 () = stop.wait() => return,
                 _ = ticker.tick() => {
-                    if let Err(err) = monitor.update_all(&board, &live, ignore_dogs).await {
+                    if let Err(err) = monitor.update_all(board, &live, ignore_dogs).await {
                         eprintln!("shep-discord: {err}");
                     }
                 }
@@ -352,30 +364,37 @@ pub async fn refresh_now<B: Board>(
 /// Start the monitor `dogs.toml` asks to run from boot, and say whether
 /// one is now running.
 ///
-/// `false`, having done nothing, when the config does not ask: an
-/// interval with no channel has nowhere to draw, and a channel with no
-/// interval is an operator saying the monitor runs on demand through
-/// `/monitor start` rather than from boot. Called once by the run loop
-/// rather than on every config reread; see that call site for why.
+/// `false`, having done nothing, when the config does not ask: a `None`
+/// `board` is a `dogs.toml` naming no `monitor_channel`, so there is
+/// nowhere to draw, and a channel with no interval is an operator saying
+/// the monitor runs on demand through `/monitor start` rather than from
+/// boot. Called once by the run loop rather than on every config reread;
+/// see that call site for why.
 ///
-/// `new_board` is how the board is built, and the run loop passes
-/// [`channel::Live::new`]. It is a parameter rather than that call
-/// written inline because the branch this function exists for is the one
-/// that spawns a task, and that task asks Discord who this bot is before
-/// its first draw: with the board built in here, proving that a
-/// `dogs.toml` asking for a monitor gets one meant putting a real request
-/// behind a unit test, so nothing proved it. It is called only when the
-/// config does ask, so a config wanting no monitor still builds nothing.
+/// `board` is passed in, and generic, for two reasons that arrived
+/// separately and want the same thing. It is generic because the branch
+/// this function exists for is the one that spawns a task, and that task
+/// asks Discord who this bot is before its first draw: with a
+/// [`channel::Live`] built in here, proving that a `dogs.toml` asking for
+/// a monitor gets one meant putting a real request behind a unit test, so
+/// nothing proved it. It is passed rather than built because the process
+/// has exactly one board and building a second here would give the
+/// monitor channel two clients learning its rate limits apart; see
+/// [`crate::wiring`].
+///
+/// `board` rather than `config.monitor_channel`, though the two say the
+/// same thing: the caller has already turned that setting into the one
+/// board this process writes with, and reading the setting again here
+/// would invite a second board beside it.
 pub fn start_from_config<B: Board + Send + Sync + 'static>(
     monitor: &Arc<Monitor>,
     config: &Config,
+    board: Option<&Arc<B>>,
     live: &Arc<Live>,
-    new_board: impl FnOnce(&str, u64) -> B,
 ) -> bool {
-    let (Some(interval), Some(channel)) = (config.monitor_interval, config.monitor_channel) else {
+    let (Some(interval), Some(board)) = (config.monitor_interval, board) else {
         return false;
     };
-    let board = new_board(&config.token, channel);
     start(monitor, Refresh::new(board, config, interval, live))
 }
 
@@ -468,6 +487,12 @@ mod tests {
 
     /// A config that names no channel, or no interval, asks for no monitor
     /// from boot, and must not leave a task running behind it.
+    ///
+    /// The board is paired with each config the way the run loop pairs
+    /// them: `Some` exactly when `monitor_channel` is set, since that
+    /// setting is the only thing a board is ever built from. Passing a
+    /// board for the config that names no channel would test a pairing
+    /// `crate::run` cannot produce.
     #[tokio::test]
     async fn a_config_that_does_not_ask_for_a_boot_monitor_starts_nothing() {
         let (live, _fake) = test_live().await;
@@ -480,15 +505,16 @@ mod tests {
             "token = \"t\"\nguild_id = 1\nmonitor_interval = \"1m\"\n",
         ] {
             let config = Config::from_toml(toml).expect("parsed");
+            // Paired with each config the way `crate::wiring` pairs them:
+            // `Some` exactly when `monitor_channel` is set, since that
+            // setting is the only thing a board is ever built from.
+            // Passing a board for the config that names no channel would
+            // test a pairing the run loop cannot produce.
+            let board = config
+                .monitor_channel
+                .map(|_channel| Arc::new(CountingChannel::new()));
             assert!(
-                !start_from_config(
-                    &monitor,
-                    &config,
-                    &live,
-                    |_token, _channel| -> CountingChannel {
-                        unreachable!("{toml:?} asks for no board to be built")
-                    }
-                ),
+                !start_from_config(&monitor, &config, board.as_ref(), &live),
                 "{toml:?} does not ask for a monitor from boot"
             );
             assert!(!is_running(&monitor));
@@ -497,12 +523,14 @@ mod tests {
 
     /// The other half of that decision, and the one that actually spawns
     /// something. A config naming both a channel and an interval starts
-    /// the monitor, and builds its board for the channel and the token
-    /// that config names rather than for anything else.
+    /// the monitor.
     ///
     /// The fake board is what makes this reachable at all. The refresh
     /// task asks Discord who this bot is before its first draw, so a
     /// `channel::Live` here would put a real request behind a unit test.
+    /// That the board is built for the channel `dogs.toml` names is no
+    /// longer this function's to get right, since it no longer builds
+    /// one; `crate::wiring`'s own test carries that.
     #[tokio::test]
     async fn a_config_that_asks_for_a_boot_monitor_starts_one() {
         let (live, mut fake) = test_live().await;
@@ -519,19 +547,11 @@ mod tests {
         fake.expect(Request::ListFlock)
             .answer(Response::Flock(Vec::new()));
 
-        let mut built_for = None;
-        let started = start_from_config(&monitor, &config, &live, |token, channel| {
-            built_for = Some((token.to_owned(), channel));
-            CountingChannel::new()
-        });
+        let board = Arc::new(CountingChannel::new());
+        let started = start_from_config(&monitor, &config, Some(&board), &live);
 
         assert!(started, "this config does ask for a monitor from boot");
         assert!(is_running(&monitor));
-        assert_eq!(
-            built_for,
-            Some(("t".to_owned(), 7)),
-            "the board is built for the token and channel dogs.toml names"
-        );
         assert!(stop(&monitor).await, "the task it started is there to stop");
     }
 

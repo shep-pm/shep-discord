@@ -24,9 +24,21 @@ use crate::bot::{
 /// [`crate::stream::run`] holds one of these and hands it every
 /// `process.*` event it sees, so a sheep that stops or comes back online
 /// is redrawn the moment it happens rather than on the next interval.
+///
+/// The board is shared rather than owned, and that `Arc` is the whole
+/// point of it: a [`channel::Live`] carries a `serenity::all::Http`, and
+/// serenity keeps its rate-limit buckets on that `Http` rather than
+/// globally (`http/ratelimiting.rs:84` in the vendored 0.12.5 source,
+/// where `routes` and `global` are per `Ratelimiter` and every
+/// `Ratelimiter::new` starts them empty). A board of this one's own would
+/// write the same channel as [`super::refresh`]'s ticker and
+/// `/monitor update` while learning that channel's limits separately from
+/// both, so each would have to take its own 429 to find a bucket the
+/// others had already found. See [`crate::run`] for where the one board
+/// is built.
 pub struct Wired {
     pub monitor: Arc<Monitor>,
-    pub board: channel::Live,
+    pub board: Arc<channel::Live>,
 }
 
 /// What one bus event does to the monitor.
@@ -72,11 +84,11 @@ impl Wired {
         }
         match action_for(kind) {
             Some(Redraw::Draw) => {
-                if let Err(err) = self.monitor.update_one(&self.board, info).await {
+                if let Err(err) = self.monitor.update_one(&*self.board, info).await {
                     eprintln!("shep-discord: {err}");
                 }
             }
-            Some(Redraw::Forget) => self.monitor.forget(&self.board, info.id).await,
+            Some(Redraw::Forget) => self.monitor.forget(&*self.board, info.id).await,
             None => {}
         }
     }

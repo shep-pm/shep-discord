@@ -22,7 +22,6 @@ use shep_client::shep_core::{protocol::SelectorSpec, values::UpDuration};
 
 use crate::{
     bot::{
-        channel,
         command::{Command, State},
         commands::bare_subcommand,
         embed::parse_custom_id,
@@ -151,16 +150,18 @@ impl MonitorCommand {
 
     /// Start the refresh task, and say what happened.
     ///
-    /// Builds a fresh [`Refresh`] rather than holding one: a board is an
-    /// HTTP client and a channel id, neither of which reaches the network
-    /// until the first request, so there is nothing to keep open between
-    /// starts.
+    /// Builds a fresh [`Refresh`] around the process's own board rather
+    /// than around a board of its own. A [`Refresh`] is a schedule and
+    /// nothing is lost by making one per start; the board inside it is a
+    /// `serenity::all::Http`, which carries everything this dog has
+    /// learned about the monitor channel's rate limits, and making a
+    /// second of those throws that away. See
+    /// [`crate::bot::monitor::watch::Wired`].
     fn start(&self, state: &State) -> String {
-        let Some(channel) = state.config.monitor_channel else {
+        let Some(board) = state.board.as_ref() else {
             return no_channel_message().to_owned();
         };
         let interval = interval_for(state.config.monitor_interval);
-        let board = channel::Live::new(&state.config.token, channel);
         if refresh::start(
             &state.monitor,
             Refresh::new(board, &state.config, interval, &state.live),
@@ -182,22 +183,22 @@ impl MonitorCommand {
     /// arrive edits what the first posted. See that method for why this
     /// is safe to run out of turn.
     ///
-    /// Builds its own board for the same reason [`MonitorCommand::start`]
-    /// does: it is an HTTP client and a channel id, neither of which
-    /// reaches the network until a request.
+    /// Draws through the process's own board for the same reason
+    /// [`MonitorCommand::start`] hands that board on: a board per
+    /// invocation would make an operator running this command twice
+    /// discover the channel's rate limits twice.
     ///
     /// # Errors
     /// Whatever the muster-roll read could not answer. A single sheep's
     /// failed draw is not an error here; it is printed and left out of
     /// the count.
     async fn update(&self, state: &State) -> Result<String, Error> {
-        let Some(channel) = state.config.monitor_channel else {
+        let Some(board) = state.board.as_ref() else {
             return Ok(no_channel_message().to_owned());
         };
-        let board = channel::Live::new(&state.config.token, channel);
         let redrawn = refresh::refresh_now(
             &state.monitor,
-            &board,
+            &**board,
             &state.live,
             state.config.ignore_dogs,
         )

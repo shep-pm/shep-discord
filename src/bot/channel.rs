@@ -251,6 +251,21 @@ impl Live {
             channel: ChannelId::new(channel),
         }
     }
+
+    /// Which channel this board writes.
+    ///
+    /// Test-only, and the only thing about a built [`Live`] that can be
+    /// read back at all: the token behind it is deliberately unreachable,
+    /// and every other question a test could ask goes through [`Board`],
+    /// where a fake answers it. What this exists for is
+    /// [`crate::wiring`], which turns `monitor_channel` into the one
+    /// board the process writes with and is the only place that can now
+    /// get that wrong.
+    #[cfg(test)]
+    #[must_use]
+    pub fn channel(&self) -> ChannelId {
+        self.channel
+    }
 }
 
 impl Board for Live {

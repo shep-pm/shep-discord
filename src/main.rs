@@ -51,6 +51,7 @@ mod stop;
 mod stream;
 #[cfg(test)]
 mod test_support;
+mod wiring;
 
 use std::{path::PathBuf, process::ExitCode};
 

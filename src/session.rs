@@ -10,13 +10,13 @@ use shep_client::shep_core::protocol::ProcessInfo;
 use std::sync::Arc;
 
 use crate::{
-    bot::{channel, monitor},
+    bot::monitor,
     config::Config,
     error::Error,
     names::Names,
     shepherd::Live,
     stop::Stop,
-    stream,
+    stream::{self, Sink},
 };
 
 /// What `handshake` and the current [`Names`] cache resolve to.
@@ -117,10 +117,17 @@ fn unresolved_message(name: &str) -> String {
 /// here without error is enough to try again on the next pass rather than
 /// needing a retry loop of its own.
 ///
-/// `monitor` is the one live monitor for this process, handed on so a
-/// `process.*` event redraws the sheep it names as it happens. It draws
-/// nothing at all while the refresh task is off; see
-/// [`monitor::watch::Wired::on_process_event`].
+/// `sink` and `wired` are this process's own, built once by
+/// [`crate::run::run`] on the first cycle that resolves a config and
+/// handed to every later one. Each carries a `serenity::all::Http`, which
+/// is where serenity keeps what it has learned about a channel's rate
+/// limits, so building either per cycle would throw that away on every
+/// reconnect and every reread of `dogs.toml`. `wired` is the one live
+/// monitor wired to the one board, handed on so a `process.*` event
+/// redraws the sheep it names as it happens; it is `None` when
+/// `dogs.toml` names no `monitor_channel`, and even when it is `Some` it
+/// draws nothing at all while the refresh task is off. See
+/// [`monitor::watch::Wired`] for both.
 ///
 /// `unresolved_warned` is the warn-once state [`warn_once`] threads across
 /// calls: [`crate::run::run`] owns it for the lifetime of the process, the
@@ -130,11 +137,12 @@ fn unresolved_message(name: &str) -> String {
 /// # Errors
 /// [`Error`] if the initial bus subscription fails; see [`stream::run`] for
 /// why nothing after that point is fatal.
-pub async fn stream_once(
+pub async fn stream_once<S: Sink>(
     live: &Live,
     handshake: Option<&str>,
     config: &Config,
-    monitor: &Arc<monitor::Monitor>,
+    sink: &S,
+    wired: Option<&Arc<monitor::watch::Wired>>,
     unresolved_warned: &mut bool,
     stop: &mut Stop,
 ) -> Result<(), Error> {
@@ -154,22 +162,7 @@ pub async fn stream_once(
             return Ok(());
         }
     };
-    let sink = stream::discord::DiscordSink::new(&config.token);
-    // Built per cycle rather than held across reconnects, the same as the
-    // sink beside it: a board is an HTTP client and a channel id, neither
-    // of which reaches the network until a request, while the `Monitor`
-    // itself and the message ids it has cached live for the whole
-    // process. `None` when no `monitor_channel` is configured, which is
-    // what keeps a bus event from drawing anywhere at all. Behind an
-    // `Arc` because `stream::run` spawns each redraw rather than awaiting
-    // it, so the task that draws cannot borrow this frame.
-    let wired = config.monitor_channel.map(|channel| {
-        Arc::new(monitor::watch::Wired {
-            monitor: Arc::clone(monitor),
-            board: channel::Live::new(&config.token, channel),
-        })
-    });
-    stream::run(live, config, own_id, names, &sink, wired.as_ref(), stop).await
+    stream::run(live, config, own_id, names, sink, wired, stop).await
 }
 
 #[cfg(test)]

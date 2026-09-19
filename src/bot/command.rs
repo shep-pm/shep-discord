@@ -8,7 +8,7 @@ use serenity::all::{
     CommandInteraction, ComponentInteraction, Context, CreateCommand, GuildId, Http,
 };
 
-use crate::{bot::monitor::Monitor, config::Config, error::Error, shepherd::Live};
+use crate::{bot::channel, bot::monitor::Monitor, config::Config, error::Error, shepherd::Live};
 
 /// The state every [`Command`] reads to reach the shepherd, this dog's own
 /// resolved config, and the live monitor.
@@ -19,9 +19,9 @@ use crate::{bot::monitor::Monitor, config::Config, error::Error, shepherd::Live}
 /// doc comment that a reader could take for the other one.
 ///
 /// `Clone` because [`crate::bot::run`] rebuilds a fresh [`interaction::Handler`]
-/// on every gateway reconnect attempt: every field is an `Arc`, so cloning
-/// shares the same shepherd session, config, and monitor across
-/// attempts rather than copying any of them.
+/// on every gateway reconnect attempt: every field is an `Arc` or an
+/// `Option` of one, so cloning shares the same shepherd session, config,
+/// monitor and board across attempts rather than copying any of them.
 ///
 /// [`interaction::Handler`]: crate::bot::interaction::Handler
 #[derive(Clone)]
@@ -36,6 +36,16 @@ pub struct State {
     /// sheep, precisely so that one slow Discord edit cannot stall every
     /// other sheep behind it. See [`crate::bot::monitor`]'s module doc.
     pub monitor: Arc<Monitor>,
+    /// The one board this process writes the monitor channel with, or
+    /// `None` when `dogs.toml` names no `monitor_channel` and there is
+    /// nowhere to draw. `/monitor start` hands it to the refresh task and
+    /// `/monitor update` draws through it directly, rather than either
+    /// building a board of its own: serenity keeps its rate-limit buckets
+    /// on the `Http` a board holds, so a board per invocation would
+    /// rediscover this channel's limits every time somebody ran the
+    /// command. See [`crate::bot::monitor::watch::Wired`] for the whole
+    /// argument.
+    pub board: Option<Arc<channel::Live>>,
 }
 
 /// One slash command: the payload that registers it and what runs when

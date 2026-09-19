@@ -5,7 +5,9 @@
 //! open, rereads this dog's own `dogs.toml` section on a timer, spawns the
 //! gateway once, starts the monitor once, and hands the bus subscription
 //! to [`crate::session::stream_once`] for as long as it lasts. Nothing in
-//! here is fatal except a signal and a refused handshake.
+//! here is fatal except a signal and a refused handshake. The Discord
+//! clients all of that writes through are [`crate::wiring::Wiring`], built
+//! here on the first cycle that resolves a config.
 //!
 //! # How it learns its own name
 //!
@@ -42,6 +44,7 @@ use crate::{
     session,
     shepherd::Live,
     stop::{Interrupted, Stop, wait},
+    wiring::Wiring,
 };
 
 /// The `[<name>]` section to read when `$SHEP_DOG_NAME` is unset, which
@@ -279,6 +282,12 @@ pub const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// under the old one until the shepherd restarts it, the same way an
 /// operator's other config edits already wait for a restart to take
 /// effect anywhere sampling happens once at startup.
+///
+/// [`Wiring`] is built once on that same cycle and for the same reason,
+/// so a changed `token` or `monitor_channel` waits for the same restart
+/// on the streaming and monitor sides as it already does on the gateway
+/// one. What it buys is the rate-limit state those clients carry; see
+/// [`Wiring`] itself.
 pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     let mut stop = Stop::on_ctrl_c();
     let mut session: Option<Arc<Live>> = None;
@@ -309,6 +318,11 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // read of this field, so a `Some` set once and never cleared stayed
     // `Some` whether the task behind it was alive or long since dead.
     let mut gateway: Option<tokio::task::JoinHandle<()>> = None;
+    // `Some` from the first cycle that resolves a config onward, and
+    // never rebuilt after that; see `Wiring` for why one of each is worth
+    // holding, and `run`'s own doc for the restart this costs an operator
+    // who edits `token` or `monitor_channel`.
+    let mut wiring: Option<Wiring> = None;
 
     if identity.handshake.is_none() {
         // Once, before the loop, rather than per connection: the answer
@@ -366,12 +380,14 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                 Ok(config) => {
                     worth_saying(None, &mut last_config_complaint);
                     let config = Arc::new(config);
+                    let wiring = wiring.get_or_insert_with(|| Wiring::new(&config, &monitor));
 
                     if gateway.is_none() {
                         let state = bot::command::State {
                             live: Arc::clone(live),
                             config: Arc::clone(&config),
                             monitor: Arc::clone(&monitor),
+                            board: wiring.board.clone(),
                         };
                         gateway = Some(tokio::spawn(bot::run(
                             Arc::clone(&config),
@@ -403,8 +419,8 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         bot::monitor::refresh::start_from_config(
                             &monitor,
                             &config,
+                            wiring.board.as_ref(),
                             live,
-                            bot::channel::Live::new,
                         );
                     }
 
@@ -425,7 +441,8 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                             live,
                             handshake,
                             &config,
-                            &monitor,
+                            &wiring.sink,
+                            wiring.wired.as_ref(),
                             &mut unresolved_warned,
                             &mut stop,
                         )
