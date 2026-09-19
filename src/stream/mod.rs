@@ -58,7 +58,7 @@ use core::fmt;
 use shep_client::shep_core::protocol::{BusEvent, ProcessEventKind};
 
 use crate::{
-    bot::monitor,
+    bot::monitor::watch,
     config::Config,
     error::Error,
     names::Names,
@@ -148,7 +148,7 @@ pub trait Sink {
 /// nothing, matching [`shep_client::EventStream`]'s own contract.
 ///
 /// `monitor` is `Some` only when `dogs.toml` names a `monitor_channel`,
-/// and even then [`monitor::Wired::on_process_event`] draws nothing while
+/// and even then [`watch::Wired::on_process_event`] draws nothing while
 /// the refresh task is off: that is the gate the old code kept at
 /// `ready.ts:28`, and it is what stops a bus event writing to a channel an
 /// operator has not turned the monitor on for. Redrawing inside this
@@ -173,7 +173,7 @@ pub async fn run<S: Sink>(
     own_id: Option<u32>,
     names: Names,
     sink: &S,
-    monitor: Option<&monitor::Wired>,
+    monitor: Option<&watch::Wired>,
     stop: &mut Stop,
 ) -> Result<(), Error> {
     let mut events = live

@@ -305,10 +305,17 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // loop is the only caller of, and a static hides that state from every
     // test that would otherwise exercise it. See `session::warn_once`.
     let mut unresolved_warned = false;
-    // Outlive every cycle: a reconnect that lost the cached message ids
-    // would post a second embed beside each one in the channel.
+    // One monitor for the whole process, built before the loop so a
+    // reconnect or a config reread keeps the message ids it has already
+    // cached: losing them would make the next refresh post a second embed
+    // beside every one already in the channel. Shared with the gateway
+    // task through `bot::command::State`.
     let monitor = Arc::new(bot::monitor::Monitor::new());
+    // The name cache the gateway, the monitor's own refresh and the log
+    // stream all read; owned here for the same reason `monitor` is.
     let names = Arc::new(Mutex::new(Names::new()));
+    // Whether the boot start below has already had its one turn. See the
+    // comment there for why it is once rather than per cycle.
     let mut monitor_started = false;
     // `Some` while the gateway task is running; see the doc above for why
     // it starts once rather than on every cycle. Cleared back to `None`
@@ -394,15 +401,17 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                     // Once, or a reread would restart a stopped monitor.
                     if !monitor_started {
                         monitor_started = true;
-                        bot::monitor::start_from_config(&monitor, &config, live, &names);
+                        bot::monitor::refresh::start_from_config(&monitor, &config, live, &names);
                     }
 
                     // Subscribing only when something reads the bus: the
-                    // log channels for the lines, `monitor_channel` for the
-                    // `process.*` events that redraw a sheep between
-                    // refreshes. This await does not return until the
-                    // subscription ends or `stop` resolves, so it stands in
-                    // for this cycle's work; the wait below retries after.
+                    // two log channels for the lines themselves, and
+                    // `monitor_channel` for the `process.*` events that
+                    // redraw a sheep between refreshes. This await does not
+                    // return until that subscription ends or `stop`
+                    // resolves, so it stands in for this cycle's ordinary
+                    // work for as long as it runs; when it returns, the
+                    // loop's own wait and reconnect below try again.
                     if config.log_channel.is_some()
                         || config.err_channel.is_some()
                         || config.monitor_channel.is_some()

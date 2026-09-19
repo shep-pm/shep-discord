@@ -8,7 +8,9 @@
 //! them; and [`run`] brings the gateway itself up. [`channel`] and
 //! [`monitor`] are the live monitor: one message per sheep in a channel of
 //! its own, edited in place, with [`channel::Board`] as the seam the
-//! network sits behind. [`crate::stream`] is a
+//! network sits behind. [`monitor`] is three files, the engine plus
+//! [`monitor::refresh`] for the task that drives it and
+//! [`monitor::watch`] for what a bus event asks of it. [`crate::stream`] is a
 //! separate connection to Discord, over REST alone, for the log-streaming
 //! half of this dog; nothing in this module touches it, and nothing in
 //! [`crate::stream`] touches a gateway.

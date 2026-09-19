@@ -120,7 +120,7 @@ fn unresolved_message(name: &str) -> String {
 /// `monitor` is the one live monitor for this process, handed on so a
 /// `process.*` event redraws the sheep it names as it happens. It draws
 /// nothing at all while the refresh task is off; see
-/// [`monitor::Wired::on_process_event`].
+/// [`monitor::watch::Wired::on_process_event`].
 ///
 /// `unresolved_warned` is the warn-once state [`warn_once`] threads across
 /// calls: `main`'s own run loop owns it for the lifetime of the process, the
@@ -161,7 +161,7 @@ pub async fn stream_once(
     // itself and the message ids it has cached live for the whole
     // process. `None` when no `monitor_channel` is configured, which is
     // what keeps a bus event from drawing anywhere at all.
-    let wired = config.monitor_channel.map(|channel| monitor::Wired {
+    let wired = config.monitor_channel.map(|channel| monitor::watch::Wired {
         monitor: Arc::clone(monitor),
         board: channel::Live::new(&config.token, channel),
     });

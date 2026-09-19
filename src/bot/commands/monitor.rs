@@ -23,7 +23,7 @@ use shep_client::shep_core::values::UpDuration;
 use crate::{
     bot::{
         command::{Command, State},
-        monitor::{self, Refresh},
+        monitor::refresh::{self, Refresh},
     },
     config::MIN_MONITOR_INTERVAL_MS,
     error::Error,
@@ -130,8 +130,8 @@ impl MonitorCommand {
             return no_channel_message().to_owned();
         };
         let interval = interval_for(state.config.monitor_interval);
-        let refresh = Refresh::new(&state.config, channel, interval, &state.live, &state.names);
-        if monitor::start(&state.monitor, refresh) {
+        let board = Refresh::new(&state.config, channel, interval, &state.live, &state.names);
+        if refresh::start(&state.monitor, board) {
             started_reply(&interval.to_string())
         } else {
             already_running_message().to_owned()
