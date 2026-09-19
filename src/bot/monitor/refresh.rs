@@ -414,6 +414,25 @@ pub(super) fn task_ended_badly_message(err: &tokio::task::JoinError) -> String {
     }
 }
 
+/// Mark `monitor` running, with a task that does nothing until a
+/// [`stop()`] ends it.
+///
+/// A stand in for the real refresh loop, which needs a token and a
+/// channel behind it. Shared by this module's tests and
+/// [`super::watch`]'s, which want the same thing for the same reason:
+/// everything behind [`is_running`]'s gate is out of reach until
+/// something is running, and the gate is half of what either file has to
+/// prove.
+#[cfg(test)]
+pub(super) fn mark_running_with_a_stand_in_task(monitor: &Monitor) {
+    let (mut stop, request) = Stop::new();
+    let handle = tokio::spawn(async move { stop.wait().await });
+    *monitor.task.lock().expect("not poisoned") = Some(Running {
+        handle: Some(handle),
+        request,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicBool, Ordering};
@@ -465,14 +484,7 @@ mod tests {
         let monitor = Monitor::new();
         let sink = CountingChannel::new();
 
-        // A task that stays alive until dropped, standing in for a real
-        // refresh loop, which would need a token and a channel behind it.
-        let (mut stop, request) = Stop::new();
-        let handle = tokio::spawn(async move { stop.wait().await });
-        *monitor.task.lock().expect("not poisoned") = Some(Running {
-            handle: Some(handle),
-            request,
-        });
+        mark_running_with_a_stand_in_task(&monitor);
 
         fake.expect(Request::ListFlock)
             .answer(Response::Flock(vec![info(1, "web"), info(2, "api")]));
