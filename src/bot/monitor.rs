@@ -507,10 +507,30 @@ fn departed(cached: &[u32], present: &[u32]) -> Vec<u32> {
 /// id the old code kept (`monitor.ts:40`): a handle can be asked whether
 /// the task behind it is still alive, which a bare timer id cannot
 /// answer, and the stop is the same watch-channel shape every other loop
-/// in this dog already waits on.
-/// There is no [`tokio_util::sync::CancellationToken`] here because that
-/// crate is not a dependency and [`Stop`] is the token this crate already
-/// has; see the task report.
+/// in this dog already waits on. There is no
+/// [`tokio_util::sync::CancellationToken`] here because that crate is not
+/// a dependency and [`Stop`] is the token this crate already has.
+///
+/// # What this stop does and does not reach
+///
+/// The [`stop::Request`] here is private to this task and is held by
+/// nothing else, so exactly one thing ever fires it: [`Monitor::stop`],
+/// which `/monitor stop` calls and then waits on. That path ends the task
+/// properly.
+///
+/// Ctrl-c does not. `main` builds its own [`Stop`] for the run loop and
+/// the gateway, and this task holds neither a clone of it nor anything
+/// derived from it; the process exits by dropping the runtime in the
+/// background, which drops this task wherever it happened to be. Saying
+/// otherwise would be the same failure this project already fixed once by
+/// deleting a shutdown path that could never run: a shutdown that only
+/// looks reachable is worse than an honest absence of one.
+///
+/// Nothing is lost by that. At most one post can be in flight when the
+/// process goes, so at worst one message lands with its id never cached,
+/// and [`crate::bot::channel::rediscover`] adopts it on the next start
+/// from the buttons it carries. That is the same recovery a restart
+/// already relies on for every other message in the channel.
 ///
 /// [`tokio_util::sync::CancellationToken`]: https://docs.rs/tokio-util
 pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
