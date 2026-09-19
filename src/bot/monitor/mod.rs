@@ -11,7 +11,7 @@
 //! topic. `crate::stream` gave up `crate::stream::state` for the same
 //! reason.
 //!
-//! # The three rules this file is built on
+//! # The seven rules this file is built on
 //!
 //! **One message per sheep, ever.** A second embed for a sheep already
 //! drawn leaves the first behind, and nothing ever edits or deletes it
@@ -39,6 +39,33 @@
 //! trip from holding up every other sheep's. A per-sheep guard is exactly
 //! as wide as the thing it protects, which is one sheep's own message.
 //!
+//! **A guard entry is never removed, not even by [`Monitor::forget`].** A
+//! caller already waiting holds a clone of the `Arc`, so dropping the
+//! entry would let the NEXT caller mint a fresh, uncontended lock and post
+//! while the first call is still in flight. See [`Monitor::guard_for`].
+//!
+//! **A post from a snapshot older than a delete is skipped.** The guard
+//! serialises two calls correctly but cannot tell either that its own
+//! INPUT was already stale, so every caller carries a forget count read
+//! when its snapshot was, and [`Monitor::draw`] skips the post when the
+//! count has moved. An edit is never skipped.
+//!
+//! **Forget counts and the drawn set are read BEFORE the muster roll**, so
+//! one refresh measures everything against one moment and cannot sweep
+//! away a sheep first drawn while it was reading. See
+//! [`Monitor::update_all`].
+//!
+//! **A stop keeps the monitor marked running until its task has ended**,
+//! so a `/monitor start` racing a `/monitor stop` is refused rather than
+//! spawning a second loop against the same channel. See [`Monitor::stop`]
+//! and `refresh::Running::active`.
+//!
+//! One thing these rules do NOT buy: bus order is not Discord order.
+//! [`crate::stream::run`] spawns each redraw rather than awaiting it, so
+//! two events about one sheep can reach Discord out of order and leave the
+//! older state drawn. The per-sheep guard still stops the duplicate; the
+//! interval refresh is what makes the state right again.
+//!
 //! # What a failed edit does, and does not, do
 //!
 //! A failed edit is reported and the cached id kept, never followed by a
@@ -59,7 +86,11 @@ use shep_client::shep_core::protocol::ProcessInfo;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    bot::{channel::Board, embed, monitor::refresh::Running},
+    bot::{
+        channel::Board,
+        embed,
+        monitor::refresh::{Running, task_ended_badly_message},
+    },
     error::Error,
     shepherd::Live,
 };
@@ -442,22 +473,6 @@ impl Monitor {
 impl Default for Monitor {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// What is printed when the refresh task did not end by returning.
-///
-/// A function rather than an inline `eprintln!`, the same reason `main`'s
-/// own `gateway_ended_message` is one: it lets the dash check reach the
-/// text without a task to panic first. An ordinary return prints nothing,
-/// because that is what stopping is supposed to look like.
-fn task_ended_badly_message(err: &tokio::task::JoinError) -> String {
-    if err.is_panic() {
-        format!(
-            "shep-discord: the monitor refresh task panicked: {err}. The messages it drew stay in              the channel, and the next start adopts them."
-        )
-    } else {
-        format!("shep-discord: the monitor refresh task was cancelled: {err}.")
     }
 }
 
@@ -881,15 +896,5 @@ mod tests {
             embed::embed_character_count(&sheep) <= MESSAGE_CHARACTER_BUDGET,
             "one sheep's own embed has a whole message's budget to itself here"
         );
-    }
-
-    /// The one string this module prints for a person that a test can
-    /// reach without a task panicking first.
-    #[tokio::test]
-    async fn nothing_printed_for_a_person_carries_a_dash() {
-        let panicked = tokio::spawn(async { panic!("deliberate") })
-            .await
-            .expect_err("the task panicked");
-        crate::test_support::assert_no_dashes(&task_ended_badly_message(&panicked));
     }
 }

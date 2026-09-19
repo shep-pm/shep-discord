@@ -18,6 +18,21 @@
 //! which only this module's own tests call directly; the run loop learns a
 //! stop happened by `wait` resolving, not by polling it.
 //!
+//! # Every wait on a stop is `biased`
+//!
+//! A crate-wide convention, and the reason is that `tokio::select!`
+//! chooses at random between arms that are both ready. Without `biased`, a
+//! loop whose timer fires in the same turn as a stop request has a
+//! coin-toss chance of taking another turn: one more flock read, one more
+//! refresh of a hundred embeds, one more batch of log lines posted after
+//! the operator asked this dog to stop. `biased` with the stop arm first
+//! makes that deterministic instead.
+//!
+//! All five sites follow it: [`wait`] here, [`crate::bot::run`]'s gateway
+//! retry loop, [`crate::bot::monitor::refresh`]'s ticker, and both of
+//! [`crate::stream::run`]'s own waits, the event loop and the wait for a
+//! shepherd's successor.
+//!
 //! # One request, two watchers
 //!
 //! Since the gateway came up, this process runs two concurrent loops

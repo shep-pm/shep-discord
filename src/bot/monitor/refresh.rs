@@ -250,6 +250,22 @@ pub fn start_from_config(monitor: &Arc<Monitor>, config: &Config, live: &Arc<Liv
     start(monitor, Refresh::new(config, channel, interval, live))
 }
 
+/// What is printed when the refresh task did not end by returning.
+///
+/// A function rather than an inline `eprintln!`, the same reason
+/// [`crate::run`]'s own `gateway_ended_message` is one: it lets the dash check reach the
+/// text without a task to panic first. An ordinary return prints nothing,
+/// because that is what stopping is supposed to look like.
+pub(super) fn task_ended_badly_message(err: &tokio::task::JoinError) -> String {
+    if err.is_panic() {
+        format!(
+            "shep-discord: the monitor refresh task panicked: {err}. The messages it drew stay in              the channel, and the next start adopts them."
+        )
+    } else {
+        format!("shep-discord: the monitor refresh task was cancelled: {err}.")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use shep_client::shep_core::{
@@ -339,5 +355,15 @@ mod tests {
             );
             assert!(!monitor.is_running());
         }
+    }
+
+    /// The one string this module writes itself. The others it prints
+    /// are an [`Error`]'s own `Display`, swept in `crate::error`.
+    #[tokio::test]
+    async fn nothing_printed_for_a_person_carries_a_dash() {
+        let panicked = tokio::spawn(async { panic!("deliberate") })
+            .await
+            .expect_err("the task panicked");
+        crate::test_support::assert_no_dashes(&task_ended_badly_message(&panicked));
     }
 }
