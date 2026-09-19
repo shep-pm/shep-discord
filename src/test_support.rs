@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use serenity::all::{CreateActionRow, CreateEmbed, MessageId};
+use serenity::all::{CreateActionRow, CreateEmbed, MessageId, UserId};
 use shep_client::{
     ReconnectingClient,
     shep_core::{
@@ -121,6 +121,16 @@ fn within(node: &serde_json::Value, field: &str, limit: usize) {
     );
 }
 
+/// Who [`CountingChannel`] says this bot is.
+///
+/// One constant rather than a literal in each test module, because two of
+/// them have to agree on it: `bot::channel`'s tests preload a channel of
+/// messages under this author, and `bot::monitor::refresh`'s reach
+/// rediscovery through the refresh task, which asks the board itself. A
+/// test that preloaded under one id while the board answered another
+/// would find nothing and say nothing about why.
+pub const BOT_USER: u64 = 500;
+
 /// A [`Board`] that records what the monitor asked it to do and reaches no
 /// network at all.
 ///
@@ -195,6 +205,13 @@ impl CountingChannel {
 }
 
 impl Board for CountingChannel {
+    /// Always [`BOT_USER`], and never a failure: a board that could not
+    /// say who it was would send every test through the error arm of the
+    /// one call in `refresh` that asks.
+    async fn me(&self) -> Result<UserId, Error> {
+        Ok(UserId::new(BOT_USER))
+    }
+
     /// Yields before recording, deliberately.
     ///
     /// A fake whose whole body runs without an await point lets a

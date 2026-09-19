@@ -400,7 +400,12 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         // stopped in between, which is the exact thing the
                         // flag exists to prevent.
                         monitor_started = true;
-                        bot::monitor::refresh::start_from_config(&monitor, &config, live);
+                        bot::monitor::refresh::start_from_config(
+                            &monitor,
+                            &config,
+                            live,
+                            bot::channel::Live::new,
+                        );
                     }
 
                     // Subscribing only when something reads the bus: the

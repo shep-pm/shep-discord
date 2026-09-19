@@ -69,7 +69,8 @@ pub struct Posted {
     pub custom_ids: Vec<String>,
 }
 
-/// What the monitor can do to its channel.
+/// What the monitor can do to its channel, and the one question it has to
+/// ask Discord about itself.
 ///
 /// The futures are spelled `impl Future<Output = ...> + Send` rather than
 /// written as `async fn`: [`crate::bot::monitor`] spawns an interval task
@@ -79,6 +80,19 @@ pub struct Posted {
 /// without naming a bound Rust has no stable way to name. Every
 /// implementation is still written as an ordinary `async fn`.
 pub trait Board {
+    /// Which user this bot is, which is what [`rediscover`] filters on.
+    ///
+    /// On the trait rather than on [`Live`] alone, where it used to live.
+    /// [`crate::bot::monitor::refresh`] calls this before its first draw,
+    /// so a `me` outside the seam was a network call outside the seam,
+    /// and it left the whole of starting a refresh task untestable: a
+    /// test could reach every decision the monitor makes about a message
+    /// and none of the decision to draw at all.
+    ///
+    /// # Errors
+    /// [`Error::Discord`] when Discord refuses to say.
+    fn me(&self) -> impl Future<Output = Result<UserId, Error>> + Send;
+
     /// Post one sheep's embed and its buttons as a new message, and hand
     /// back the id to edit next time.
     ///
@@ -237,22 +251,17 @@ impl Live {
             channel: ChannelId::new(channel),
         }
     }
+}
 
-    /// Which user this bot is, which is what [`rediscover`] filters on.
-    ///
+impl Board for Live {
     /// Asked of Discord rather than read from a cache: this crate builds
     /// serenity without the `cache` feature (see `Cargo.toml`), so there
     /// is no `current_user` to read, and the answer cannot change while
     /// the token does not.
-    ///
-    /// # Errors
-    /// [`Error::Discord`] when Discord refuses to say.
-    pub async fn me(&self) -> Result<UserId, Error> {
+    async fn me(&self) -> Result<UserId, Error> {
         Ok(self.http.get_current_user().await?.id)
     }
-}
 
-impl Board for Live {
     async fn post(&self, embed: CreateEmbed, buttons: CreateActionRow) -> Result<MessageId, Error> {
         let message = CreateMessage::new().embed(embed).components(vec![buttons]);
         Ok(self.channel.send_message(&self.http, message).await?.id)
@@ -348,8 +357,11 @@ mod tests {
         message_from(1, ME, custom_ids)
     }
 
-    /// The bot's own user id, for the author filter.
-    const ME: u64 = 500;
+    /// The bot's own user id, for the author filter. The same id
+    /// [`CountingChannel`] answers [`Board::me`] with, so a test that
+    /// preloads a channel here and one that reaches rediscovery through
+    /// the refresh task are talking about the same bot.
+    const ME: u64 = crate::test_support::BOT_USER;
 
     /// shep restarts a dog, and the cached message ids live in memory. The
     /// id is already encoded in every button this bot wrote, so
