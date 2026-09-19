@@ -236,10 +236,15 @@ mod tests {
     /// otherwise finds out on the next deploy.
     #[test]
     fn the_start_reply_says_the_override_is_not_written_down() {
-        let reply = started_reply("1m");
-        assert!(reply.contains("1m"), "{reply}");
-        assert!(reply.contains("does not survive a restart"), "{reply}");
-        assert!(reply.contains("monitor_interval in dogs.toml"), "{reply}");
+        // The whole string, not three `contains` calls against it: the
+        // output is deterministic and fully known, so naming three
+        // clauses would let a wording regression in either of the others
+        // pass in silence.
+        assert_eq!(
+            started_reply("1m"),
+            "The monitor is on, refreshing every 1m. This is a runtime override and it does not \
+             survive a restart: set monitor_interval in dogs.toml to have it start on its own."
+        );
     }
 
     /// The interval is rendered from an operator-supplied value, so the
