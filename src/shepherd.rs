@@ -160,7 +160,7 @@ impl Live {
     /// As [`Self::section`].
     #[allow(
         dead_code,
-        reason = "reached once a Discord command calls it, in a later task"
+        reason = "no caller: every command that wants one sheep is handed it already, /shep by name through Live::act and the monitor by the ProcessInfo a bus event carries. Named as a fact rather than as a task that will reach it, because Task 13 was the last feature task and the prediction would not come true"
     )]
     pub async fn describe(&self, name: &str) -> Result<Option<ProcessInfo>, Error> {
         let asked = Request::Describe {

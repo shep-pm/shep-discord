@@ -32,10 +32,6 @@ use crate::{
 };
 
 /// Discord's own ceiling on a component's `custom_id`, in characters.
-#[allow(
-    dead_code,
-    reason = "read by custom_id's own debug_assert; unreached from main until Task 13's /monitor draws a sheep's buttons, one sheep per message"
-)]
 pub const CUSTOM_ID_LIMIT: usize = 100;
 
 /// One verb, as [`custom_id`] and [`parse_custom_id`] spell it on the wire.
@@ -45,10 +41,6 @@ pub const CUSTOM_ID_LIMIT: usize = 100;
 /// [`Verb`] a `Display` impl for it would invite a reply sentence to
 /// borrow that spelling too, which is exactly the kind of string this
 /// dog's dash check exists for and this one is not meant to pass.
-#[allow(
-    dead_code,
-    reason = "called by custom_id; unreached from main until Task 13's /monitor draws a sheep's buttons, one sheep per message"
-)]
 fn verb_str(verb: Verb) -> &'static str {
     match verb {
         Verb::Start => "start",
@@ -87,10 +79,6 @@ fn verb_from_str(raw: &str) -> Option<Verb> {
 /// characters. The `debug_assert!` below is a tripwire against a future
 /// verb spelling long enough to change that, not a check this path can
 /// fail today.
-#[allow(
-    dead_code,
-    reason = "called by process_buttons and Task 13's rediscovery, which reads a sheep id back out of a button's custom_id; unreached from main until then"
-)]
 #[must_use]
 pub fn custom_id(verb: Verb, id: u32) -> String {
     let id = format!("{}:{id}", verb_str(verb));
@@ -322,10 +310,12 @@ pub fn embed_character_count(info: &ProcessInfo) -> usize {
 ///
 /// Five is [`CreateActionRow`]'s own ceiling, not a number chosen here: a
 /// sixth verb needs a second row, never a sixth button on this one.
-#[allow(
-    dead_code,
-    reason = "called by Task 13's /monitor, which draws one sheep per message so its buttons never share a message's five-action-row cap with another sheep's; /shep list (Task 12) draws no buttons, since it packs several sheep per message on the character budget alone"
-)]
+///
+/// Drawn by [`crate::bot::monitor`], which puts one sheep on a message, so
+/// these five never share that message's five-action-row cap with another
+/// sheep's. `/shep list` draws none: it packs several sheep onto one
+/// message on the character budget alone, and five rows apiece would blow
+/// the row cap long before the character one.
 pub fn process_buttons(info: &ProcessInfo) -> CreateActionRow {
     let button = |verb: Verb, label: &str, style: ButtonStyle| {
         CreateButton::new(custom_id(verb, info.id))
