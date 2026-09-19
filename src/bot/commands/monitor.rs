@@ -22,6 +22,7 @@ use shep_client::shep_core::values::UpDuration;
 
 use crate::{
     bot::{
+        channel,
         command::{Command, State},
         monitor::refresh::{self, Refresh},
     },
@@ -89,6 +90,37 @@ fn not_running_message() -> &'static str {
     "The monitor is not running."
 }
 
+/// What `/monitor update` answers with when there is no monitor to
+/// redraw.
+///
+/// Says what to do about it, where `/monitor stop`'s own version of this
+/// does not need to: somebody who asked for a redraw wants the board
+/// current, and the next step is one command away.
+fn nothing_to_redraw_message() -> &'static str {
+    "The monitor is not running, so there is nothing to redraw. Start it with /monitor start."
+}
+
+/// What `/monitor update` answers with once it has redrawn the flock.
+///
+/// Names the count, because the interesting failure is a monitor that
+/// answers cheerfully having drawn nothing: an empty flock and a flock
+/// this dog could not read look identical in the channel, and the second
+/// one also prints to stderr.
+///
+/// Fitted to [`limits::MESSAGE_CONTENT_LIMIT`] like every other reply
+/// here. Nothing interpolated can reach that limit today, since a count
+/// of sheep is at most twenty digits, so this one is consistency rather
+/// than a bound the input can actually exceed; [`started_reply`] renders
+/// an operator-supplied value and is the one that genuinely needs it.
+fn redrew_reply(count: usize) -> String {
+    let sentence = if count == 0 {
+        "The monitor is up to date. There was nothing in the flock to draw.".to_owned()
+    } else {
+        format!("Redrew {count} sheep. The next scheduled refresh is unchanged.")
+    };
+    limits::fit(&sentence, limits::MESSAGE_CONTENT_LIMIT)
+}
+
 /// What `/monitor start` answers with when `dogs.toml` names no channel.
 fn no_channel_message() -> &'static str {
     "No monitor_channel is set in the [discord] section of dogs.toml, so there is nowhere to \
@@ -139,6 +171,40 @@ impl MonitorCommand {
     }
 }
 
+impl MonitorCommand {
+    /// Redraw the flock now, and say what happened.
+    ///
+    /// Goes through `Monitor::refresh_now`, which is the same
+    /// `update_all` the ticker calls, so a manual redraw racing a
+    /// scheduled one or a bus event cannot post a second message for one
+    /// sheep: the per-sheep guard serialises them and the second to
+    /// arrive edits what the first posted. See that method for why this
+    /// is safe to run out of turn.
+    ///
+    /// Builds its own board for the same reason [`MonitorCommand::start`]
+    /// does: it is an HTTP client and a channel id, neither of which
+    /// reaches the network until a request.
+    ///
+    /// # Errors
+    /// Whatever the muster-roll read could not answer. A single sheep's
+    /// failed draw is not an error here; it is printed and left out of
+    /// the count.
+    async fn update(&self, state: &State) -> Result<String, Error> {
+        let Some(channel) = state.config.monitor_channel else {
+            return Ok(no_channel_message().to_owned());
+        };
+        let board = channel::Live::new(&state.config.token, channel);
+        let redrawn = state
+            .monitor
+            .refresh_now(&board, &state.live, &state.names, state.config.ignore_dogs)
+            .await?;
+        Ok(match redrawn {
+            Some(count) => redrew_reply(count),
+            None => nothing_to_redraw_message().to_owned(),
+        })
+    }
+}
+
 impl Command for MonitorCommand {
     fn data(&self) -> CreateCommand {
         CreateCommand::new(self.name())
@@ -147,6 +213,10 @@ impl Command for MonitorCommand {
             .add_option(bare_subcommand(
                 "start",
                 "Start refreshing one message per sheep until this dog restarts.",
+            ))
+            .add_option(bare_subcommand(
+                "update",
+                "Redraw every sheep now, without waiting for the next refresh.",
             ))
             .add_option(bare_subcommand("stop", "Stop refreshing the monitor."))
     }
@@ -172,6 +242,7 @@ impl Command for MonitorCommand {
 
             let reply = match sub.name {
                 "start" => self.start(state),
+                "update" => self.update(state).await?,
                 "stop" => {
                     // Awaited rather than fired and forgotten: see
                     // `Monitor::stop` for why the caller is the only
@@ -207,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn the_command_declares_exactly_start_and_stop() {
+    fn the_command_declares_exactly_start_update_and_stop() {
         let json = serde_json::to_value(MonitorCommand.data()).expect("json");
         let names: Vec<&str> = json["options"]
             .as_array()
@@ -215,7 +286,10 @@ mod tests {
             .iter()
             .map(|option| option["name"].as_str().expect("name"))
             .collect();
-        assert_eq!(names, vec!["start", "stop"]);
+        // The spec names all three (`/monitor start|update|stop`). The
+        // plan specified two and this dog shipped two until the gap was
+        // found, so the set is pinned by name rather than by count.
+        assert_eq!(names, vec!["start", "update", "stop"]);
     }
 
     /// An unset `monitor_interval` still starts a working monitor, at the
@@ -256,9 +330,38 @@ mod tests {
         assert!(reply.ends_with('\u{2026}'));
     }
 
+    /// A redraw names what it drew, and the empty flock is its own
+    /// sentence rather than "Redrew 0 sheep", which reads like a failure.
+    #[test]
+    fn a_redraw_reply_names_what_it_drew() {
+        assert_eq!(
+            redrew_reply(4),
+            "Redrew 4 sheep. The next scheduled refresh is unchanged."
+        );
+        assert_eq!(
+            redrew_reply(0),
+            "The monitor is up to date. There was nothing in the flock to draw."
+        );
+    }
+
+    /// Somebody who asked for a redraw and has no monitor running is told
+    /// the command that fixes that, since it is the obvious next thing
+    /// they want.
+    #[test]
+    fn a_refused_redraw_says_how_to_start_the_monitor() {
+        assert_eq!(
+            nothing_to_redraw_message(),
+            "The monitor is not running, so there is nothing to redraw. Start it with /monitor \
+             start."
+        );
+    }
+
     #[test]
     fn nothing_printed_for_a_person_carries_a_dash() {
         assert_no_dashes(&started_reply("1m"));
+        assert_no_dashes(&redrew_reply(4));
+        assert_no_dashes(&redrew_reply(0));
+        assert_no_dashes(nothing_to_redraw_message());
         assert_no_dashes(already_running_message());
         assert_no_dashes(stopped_message());
         assert_no_dashes(not_running_message());
