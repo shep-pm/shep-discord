@@ -1398,7 +1398,14 @@ git add src/bot/ && git commit -m "feat: keep a live embed per sheep in a monito
 ### Task 14: README, CI, release-plz, and the probe integration test
 
 **Files:**
-- Create: `README.md`, `.github/workflows/ci.yml`, `release-plz.toml`, `release-plz-changelog.toml`, `tests/probe.rs`, `.coderabbit.yaml`, `CLAUDE.md`
+- Create: `README.md`, `.github/workflows/test.yml`, `.github/workflows/release-plz-pr.yml`, `.github/workflows/release-plz-release.yml`, `release-plz.toml`, `release-plz-changelog.toml`, `tests/probe.rs`, `.coderabbit.yaml`, `CLAUDE.md`
+
+The packaging files are ported from the sibling shep repositories rather than written fresh, and which sibling matters per file:
+
+- **`test.yml`, not `ci.yml`.** Both shep and shep-log-rotate call the CI workflow `test.yml`, and `.coderabbit.yaml` refers to it by that name in two places. A new name here would break those references silently.
+- **Two release-plz workflows, not one.** `release-plz-pr.yml` maintains the version-bump pull request; `release-plz-release.yml` tags, releases and publishes to crates.io after it merges. They were split on 2026-08-27, and shep itself carries only the split pair. Do NOT port shep-log-rotate's `release-plz.yml`: that is the superseded one-file version from before the split, it is still live in that repository, and copying it here would give this repo two workflows racing to open and publish the same release.
+- **`.coderabbit.yaml` is adapted from shep-log-rotate's, not shep's.** shep's is 307 lines and assumes a five-crate workspace with a documentation site; shep-log-rotate's 159-line version is already the single-crate dog adaptation. Start from that one and change what is dog-specific: the `path_instructions` naming `prune.rs` and `rotate.rs` are about deleting and renaming log files and have no analogue here. This dog's equivalents are `src/stream/pack.rs`, where a Discord length limit has bitten five times, and `src/session.rs`, where the self-filter decides whether the dog publishes its own output back into the channel it writes to.
+- Keep every action pinned by commit SHA in both release workflows, which hold `RELEASE_PLZ_TOKEN` and `CARGO_REGISTRY_TOKEN`. `test.yml` holds no secrets and uses moving tags. Every job carries `timeout-minutes`; GitHub's default is 360.
 
 **Interfaces:**
 - Consumes: everything.
