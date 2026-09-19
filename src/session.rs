@@ -160,10 +160,14 @@ pub async fn stream_once(
     // of which reaches the network until a request, while the `Monitor`
     // itself and the message ids it has cached live for the whole
     // process. `None` when no `monitor_channel` is configured, which is
-    // what keeps a bus event from drawing anywhere at all.
-    let wired = config.monitor_channel.map(|channel| monitor::watch::Wired {
-        monitor: Arc::clone(monitor),
-        board: channel::Live::new(&config.token, channel),
+    // what keeps a bus event from drawing anywhere at all. Behind an
+    // `Arc` because `stream::run` spawns each redraw rather than awaiting
+    // it, so the task that draws cannot borrow this frame.
+    let wired = config.monitor_channel.map(|channel| {
+        Arc::new(monitor::watch::Wired {
+            monitor: Arc::clone(monitor),
+            board: channel::Live::new(&config.token, channel),
+        })
     });
     stream::run(live, config, own_id, names, &sink, wired.as_ref(), stop).await
 }

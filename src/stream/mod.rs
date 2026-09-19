@@ -54,6 +54,7 @@ pub mod pack;
 pub mod state;
 
 use core::fmt;
+use std::sync::Arc;
 
 use shep_client::{
     LinkLost,
@@ -154,9 +155,36 @@ pub trait Sink {
 /// and even then [`watch::Wired::on_process_event`] draws nothing while
 /// the refresh task is off: that is the gate the old code kept at
 /// `ready.ts:28`, and it is what stops a bus event writing to a channel an
-/// operator has not turned the monitor on for. Redrawing inside this
-/// `select!` holds the loop for one Discord round trip, the same as the
-/// muster-roll read beside it already does.
+/// operator has not turned the monitor on for.
+///
+/// The redraw is spawned rather than awaited here, and the reason is a
+/// burst rather than a single event. A `shep restart` across a fold of
+/// thirty sheep puts thirty `process.*` events on the bus at once, each
+/// one a Discord edit of a few hundred milliseconds plus whatever the
+/// rate limiter adds. Awaiting them in turn takes this loop off the bus
+/// for the whole run, and the upstream channel holds 64 items, so the log
+/// lines those same restarting sheep are emitting overflow it: the
+/// operator gets a `Lagged` notice and a hole in the log channel at the
+/// moment they are most likely to be reading it. Spawning keeps
+/// `events.next()` and the flush ticker responsive while the edits go
+/// out, and [`watch::Wired`] is behind an [`Arc`] so a spawned redraw
+/// borrows nothing from this frame.
+///
+/// Nothing the monitor's locking guarantees is given up by that:
+/// [`crate::bot::monitor::Monitor`] takes a per-sheep guard before it
+/// reads its cache, so two redraws for one sheep still serialise and the
+/// second still finds the message id the first posted. What does change
+/// is ORDER between them. Two events for one sheep no longer necessarily
+/// reach Discord in the order the bus emitted them, so a `stop` arriving
+/// a moment after an `online` can leave the older state drawn. That is
+/// bounded and self-correcting: [`crate::bot::monitor::refresh`] redraws
+/// every sheep from one fresh muster roll on its interval, which is the
+/// same mechanism that already covers the four event kinds
+/// [`watch`] deliberately ignores.
+///
+/// The muster-roll read beside it is still awaited, because the name
+/// cache the next event renders against has to be current before that
+/// event is handled.
 ///
 /// The `select!` is `biased`, stop first, the same shape shep-log-rotate's
 /// own `wait` uses: a stop already requested wins over a flush tick or a
@@ -196,7 +224,7 @@ pub async fn run<S: Sink>(
     own_id: Option<u32>,
     names: Names,
     sink: &S,
-    monitor: Option<&watch::Wired>,
+    monitor: Option<&Arc<watch::Wired>>,
     stop: &mut Stop,
 ) -> Result<(), Error> {
     let mut state = State::from_config(own_id, names, config, sink);
@@ -238,7 +266,10 @@ pub async fn run<S: Sink>(
                             }
                         }
                         if let Some(wired) = monitor {
-                            wired.on_process_event(event, &info).await;
+                            let wired = Arc::clone(wired);
+                            tokio::spawn(async move {
+                                wired.on_process_event(event, &info).await;
+                            });
                         }
                     }
                     Some(Ok(bus_event)) => state.on_event(bus_event),
