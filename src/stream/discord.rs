@@ -164,7 +164,20 @@ impl<R: Rest> Sink for DiscordSink<R> {
     /// anything else, collapses to [`SinkError::BadRequest`]: see
     /// [`SinkError`]'s own doc for why a rate limit never reaches this far,
     /// and why there is only the one variant left to map onto.
+    ///
+    /// An empty `chunks` is refused before the request rather than by it.
+    /// Discord rejects a message carrying no content, no embed and no
+    /// attachment, so the answer is the same either way and this is the
+    /// cheaper place to get it. What the guard is really for is the
+    /// caller: [`crate::stream::state::State`] clears what it flushed
+    /// once this returns `Ok`, so a batch that arrived here empty when it
+    /// should have held lines would take them with it silently. Nothing
+    /// produces one today, and `an_empty_batch_is_refused_without_a_round_trip`
+    /// says why that is worth a guard anyway.
     async fn send(&self, channel: u64, chunks: Vec<Chunk>) -> Result<(), SinkError> {
+        if chunks.is_empty() {
+            return Err(SinkError::BadRequest);
+        }
         let mut message = CreateMessage::new();
         for chunk in chunks {
             message = message.add_embed(
@@ -379,6 +392,33 @@ mod tests {
             assert_eq!(outcome, Err(SinkError::BadRequest));
             assert_eq!(sink.rest.attempts(), 1, "it tried, and was refused");
         }
+    }
+
+    /// An empty batch is refused here, loudly, instead of at Discord.
+    ///
+    /// [`crate::stream::pack::into_messages`] does not produce one today:
+    /// its `pack_by_budget` opens a batch only when it has an item to put
+    /// in it, so no chunks come back as no messages rather than as one
+    /// empty message. This is the guard for the day that stops being
+    /// true. Discord refuses a message carrying no content, no embed and
+    /// no attachment, so the round trip was only ever going to buy the
+    /// same answer a request later.
+    ///
+    /// Refused rather than quietly accepted, which is the tempting shape
+    /// and the wrong one: [`crate::stream::state::State`] clears what it
+    /// flushed once the sink says it went out, so a batch that arrived
+    /// here empty when it should have held lines would take those lines
+    /// with it and say nothing. `a_rejected_batch_is_dropped_not_retried`
+    /// covers what the caller does with the refusal.
+    #[tokio::test]
+    async fn an_empty_batch_is_refused_without_a_round_trip() {
+        let rest = Recording::new();
+        let sink = DiscordSink::over(rest);
+
+        let outcome = sink.send(7, Vec::new()).await;
+
+        assert_eq!(outcome, Err(SinkError::BadRequest));
+        assert_eq!(sink.rest.attempts(), 0, "nothing was sent to be refused");
     }
 
     /// A batch reaches Discord exactly as [`crate::stream::pack`] built
