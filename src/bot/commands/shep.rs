@@ -7,9 +7,11 @@
 //! before the interaction is ever sent instead: the six verbs that act on
 //! a sheep (`start`, `stop`, `restart`, `reload`, `delete`, `flush`) are
 //! six separate subcommands here, each with its own required,
-//! autocompleting `name`. `list`, `save`, and `reopen` take no options at
-//! all; `reopen` with nothing to select acts on [`SelectorSpec::All`],
-//! since it has no `name` option to narrow it.
+//! autocompleting `name`. `list` and `save` take no options at all.
+//! `reopen` is the one verb in between: its own `name` is optional,
+//! matching `shep-cli`'s own `ReopenArgs` (a reopen destroys nothing, so
+//! it does not need a name the way `stop`/`restart`/`delete` do), and
+//! acts on [`SelectorSpec::All`] only when nothing was named.
 //!
 //! # Why `list` is the one subcommand this file cannot just call `run`
 //! for and defer to
@@ -92,19 +94,6 @@ const VERBS: &[(&str, Verb)] = &[
     ("reopen", Verb::Reopen),
 ];
 
-/// The verbs whose subcommand declares a required, autocompleting `name`:
-/// every one of [`VERBS`] except `save` and `reopen`, which act on the
-/// whole flock or (for `reopen`) on everything when nothing is named. See
-/// the module doc for why neither takes a `name` option at all.
-const VERBS_NEEDING_A_NAME: &[Verb] = &[
-    Verb::Start,
-    Verb::Stop,
-    Verb::Restart,
-    Verb::Reload,
-    Verb::Delete,
-    Verb::Flush,
-];
-
 fn verb_for_subcommand(name: &str) -> Option<Verb> {
     VERBS
         .iter()
@@ -120,13 +109,22 @@ fn name_option() -> CreateCommandOption {
         .set_autocomplete(true)
 }
 
-/// One subcommand that acts on a named sheep.
+/// The same option as [`name_option`], but optional: `reopen`'s own
+/// `name`, on [`selector_for`]'s own reasoning for why `reopen` alone
+/// among the verbs that take one does not require it.
+fn optional_name_option() -> CreateCommandOption {
+    CreateCommandOption::new(CommandOptionType::String, "name", "Which sheep, by name.")
+        .required(false)
+        .set_autocomplete(true)
+}
+
+/// One subcommand that acts on a named sheep, the name required.
 fn verb_subcommand(name: &str, description: &str) -> CreateCommandOption {
     CreateCommandOption::new(CommandOptionType::SubCommand, name, description)
         .add_sub_option(name_option())
 }
 
-/// One subcommand that takes no options at all: `list`, `save`, `reopen`.
+/// One subcommand that takes no options at all: `list` and `save`.
 fn bare_subcommand(name: &str, description: &str) -> CreateCommandOption {
     CreateCommandOption::new(CommandOptionType::SubCommand, name, description)
 }
@@ -149,8 +147,9 @@ fn reply_content(reply: &str) -> String {
 }
 
 /// Extract the `name` option's value from a subcommand's own resolved
-/// options, or `None` when there is not one: `list`, `save`, and `reopen`
-/// have no `name` option to find one under.
+/// options, or `None` when there is not one: `list` and `save` have no
+/// `name` option to find one under, and `reopen`'s own `name` is present
+/// only when an operator gave one.
 fn name_from(value: &ResolvedValue<'_>) -> Option<String> {
     let ResolvedValue::SubCommand(options) = value else {
         return None;
@@ -166,22 +165,49 @@ fn name_from(value: &ResolvedValue<'_>) -> Option<String> {
     })
 }
 
-/// What `verb` acts on, given the subcommand's own resolved options.
+/// What `verb` acts on, given the `name` its subcommand resolved to, if
+/// any.
 ///
-/// [`Verb::Save`] and [`Verb::Reopen`] resolve to [`SelectorSpec::All`]
-/// regardless of what `value` carries: neither subcommand declares a
-/// `name` option, so there is nothing else `value` could hold. Every other
-/// verb's subcommand declares `name` required, so Discord never sends one
-/// of them without it; an interaction that somehow arrived without one
-/// anyway (a stale command definition mid-redeploy, say) resolves to an
-/// empty name rather than a panic, and the shepherd is left to refuse a
-/// sheep named nothing the way it would refuse any other name it does not
-/// know.
-fn selector_for(verb: Verb, value: &ResolvedValue<'_>) -> SelectorSpec {
-    if !VERBS_NEEDING_A_NAME.contains(&verb) {
-        return SelectorSpec::All;
+/// Split out from [`selector_for`] so this decision is testable on its
+/// own: [`ResolvedValue`] is `#[non_exhaustive]` in serenity, and a
+/// struct-literal [`ResolvedOption`] cannot be built from this crate (see
+/// the task report), so a test cannot hand [`selector_for`] a resolved
+/// "name is present" case directly. A plain `Option<String>` carries the
+/// same fact without that restriction.
+///
+/// [`Verb::Save`] always resolves to [`SelectorSpec::All`]: it has no
+/// `name` option to find one under, and its own selector is unused on
+/// [`Live::act`]'s `Save` path regardless of what is passed (see
+/// `shepherd`'s own module doc).
+///
+/// [`Verb::Reopen`] is the one verb whose `name` is optional rather than
+/// required or absent, matching `shep-cli`'s own `ReopenArgs`: its doc
+/// comment gives the reason, "the selector is optional, defaulting to
+/// `DEFAULT_SELECTOR`, where `stop`/`restart`/`delete` all demand one:
+/// those destroy something, and a reopen destroys nothing." Present, it
+/// selects that sheep; absent, it resolves to `SelectorSpec::All`, the
+/// same "reopen everything" behavior this dog had before it gained a
+/// `name` option at all, so an operator who never names one keeps the
+/// original, blanket reopen.
+///
+/// Every other verb's subcommand declares `name` required, so Discord
+/// never sends one of them without it; an interaction that somehow
+/// arrived without one anyway (a stale command definition mid-redeploy,
+/// say) resolves to an empty name rather than a panic, and the shepherd
+/// is left to refuse a sheep named nothing the way it would refuse any
+/// other name it does not know.
+fn selector_for_name(verb: Verb, name: Option<String>) -> SelectorSpec {
+    match verb {
+        Verb::Save => SelectorSpec::All,
+        Verb::Reopen => name.map_or(SelectorSpec::All, SelectorSpec::Name),
+        _ => SelectorSpec::Name(name.unwrap_or_default()),
     }
-    SelectorSpec::Name(name_from(value).unwrap_or_default())
+}
+
+/// What `verb` acts on, given the subcommand's own resolved options. See
+/// [`selector_for_name`] for the actual decision.
+fn selector_for(verb: Verb, value: &ResolvedValue<'_>) -> SelectorSpec {
+    selector_for_name(verb, name_from(value))
 }
 
 impl ShepCommand {
@@ -329,10 +355,14 @@ impl Command for ShepCommand {
             .add_option(verb_subcommand("flush", "Empty a sheep's log files."))
             .add_option(bare_subcommand("list", "List every sheep in the flock."))
             .add_option(bare_subcommand("save", "Write the muster roll now."))
-            .add_option(bare_subcommand(
-                "reopen",
-                "Reopen every sheep's log files, for an external rotator.",
-            ))
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "reopen",
+                    "Reopen a sheep's log files, or every sheep's, for an external rotator.",
+                )
+                .add_sub_option(optional_name_option()),
+            )
     }
 
     fn name(&self) -> &'static str {
@@ -429,6 +459,87 @@ mod tests {
         for verb in ["list", "save", "reopen"] {
             assert!(sub.iter().any(|o| o["name"] == verb), "{verb} missing");
         }
+    }
+
+    /// `reopen` is the one verb whose `name` is present but optional,
+    /// matching `shep-cli`'s own `ReopenArgs`: a reopen destroys nothing,
+    /// so it does not need one the way `stop`, `restart`, and `delete` do
+    /// (see [`selector_for_name`]'s own doc comment). `list` and `save`
+    /// still take no options at all.
+    #[test]
+    fn reopen_declares_an_optional_autocompleting_name() {
+        let json = serde_json::to_value(ShepCommand.data()).expect("json");
+        let sub: Vec<_> = json["options"]
+            .as_array()
+            .expect("options")
+            .iter()
+            .collect();
+        let reopen = sub.iter().find(|o| o["name"] == "reopen").expect("reopen");
+        let name_option = reopen["options"]
+            .as_array()
+            .expect("sub options")
+            .iter()
+            .find(|o| o["name"] == "name")
+            .expect("name");
+        assert_eq!(
+            name_option["required"], false,
+            "reopen's name must not be required"
+        );
+        assert_eq!(
+            name_option["autocomplete"], true,
+            "reopen's name must autocomplete"
+        );
+
+        for verb in ["list", "save"] {
+            let option = sub.iter().find(|o| o["name"] == verb).expect(verb);
+            assert!(
+                option["options"].as_array().is_none_or(Vec::is_empty),
+                "{verb} should take no options"
+            );
+        }
+    }
+
+    /// `reopen` acts on everything when nothing is named, the same
+    /// blanket behavior this dog had before it gained a `name` option at
+    /// all.
+    #[test]
+    fn reopen_with_no_name_selects_everything() {
+        assert_eq!(selector_for_name(Verb::Reopen, None), SelectorSpec::All);
+    }
+
+    /// `reopen` given a name selects only that sheep, unlike `save`,
+    /// which has no target at all regardless of what is passed.
+    #[test]
+    fn reopen_with_a_name_selects_that_sheep() {
+        assert_eq!(
+            selector_for_name(Verb::Reopen, Some("web".to_owned())),
+            SelectorSpec::Name("web".to_owned())
+        );
+    }
+
+    #[test]
+    fn save_always_selects_everything_regardless_of_a_name() {
+        assert_eq!(selector_for_name(Verb::Save, None), SelectorSpec::All);
+        assert_eq!(
+            selector_for_name(Verb::Save, Some("web".to_owned())),
+            SelectorSpec::All
+        );
+    }
+
+    /// Every other verb still names the sheep it was given, or an empty
+    /// name in the structurally-unreachable case Discord's own required
+    /// option never actually lets through (see [`selector_for_name`]'s
+    /// own doc comment).
+    #[test]
+    fn a_verb_needing_a_name_selects_the_name_it_was_given() {
+        assert_eq!(
+            selector_for_name(Verb::Start, Some("web".to_owned())),
+            SelectorSpec::Name("web".to_owned())
+        );
+        assert_eq!(
+            selector_for_name(Verb::Start, None),
+            SelectorSpec::Name(String::new())
+        );
     }
 
     #[tokio::test]
