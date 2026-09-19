@@ -7,9 +7,9 @@
 
 A Discord dog for [shep](https://github.com/shep-pm/shep).
 
-It streams a sheep's stdout and stderr into Discord channels, keeps a live
-embed per sheep in a monitor channel, and answers three slash commands so an
-operator can drive the flock and check on the host from Discord.
+It streams a sheep's stdout and stderr into Discord channels and keeps a
+live embed per sheep in a monitor channel. Three slash commands let an
+operator drive the flock and check on the host without leaving Discord.
 
 It is an external dog. Nothing here is built into shep: it is an ordinary
 binary you adopt, and it talks to the daemon over the same socket the CLI
@@ -63,38 +63,20 @@ shep-discord --print-config >> ~/.shep/dogs.toml
 ```
 
 Every line it prints is commented, so appending it changes nothing until you
-uncomment something.
+uncomment something. `PRINT_CONFIG` in `src/config.rs` is where that block
+lives, and a test holds it to the values the code actually uses.
+
+The smallest config that runs:
 
 ```toml
 [discord]
-# Discord bot token. Required: shep-discord will not run without one.
-#token = "your-bot-token"
-# The guild (server) this bot serves. Required.
-#guild_id = 123456789012345678
-# Channel for the live monitor. Unset disables it.
-#monitor_channel = 123456789012345678
-# How often the monitor refreshes, e.g. "1m". Unset means the monitor does
-# not run from boot. Below 15s is raised to it: a monitor refreshing that
-# often spends the channel's whole rate budget redrawing embeds nobody
-# asked for.
-#monitor_interval = "1m"
-# Channel for stdout lines. Unset disables that stream.
-#log_channel = 123456789012345678
-# Channel for stderr lines. Unset disables that stream.
-#err_channel = 123456789012345678
-# How often the buffer drains, e.g. "1s".
-#flush = "1s"
-# How wide a window joins lines into one embed, e.g. "1s".
-#coalesce = "1s"
-# How many lines the buffer holds before dropping the oldest.
-#buffer_lines = 2000
-# Hide other dogs from listings and the monitor.
-#ignore_dogs = false
+token = "your-bot-token"
+guild_id = 123456789012345678
 ```
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `token` | none, required | The Discord bot token. **This is a secret**: `--schema` marks it, and `shep lookout`'s config pane masks it. Never logged; `Config`'s own `Debug` prints `<redacted>` in its place. |
+| `token` | none, required | The Discord bot token. This is a secret: `--schema` marks it, and `shep lookout`'s config pane masks it. Never logged; `Config`'s own `Debug` prints `<redacted>` in its place. |
 | `guild_id` | none, required | The guild (server) this bot serves. A Discord snowflake, so `0` is refused rather than a real value. |
 | `monitor_channel` | unset | Channel for the live monitor. Unset disables it. |
 | `monitor_interval` | unset | How often the monitor refreshes, e.g. `"1m"`. Unset means the monitor does not start on boot; `/monitor start` can still start it for the rest of the process's life. A value under 15 seconds is raised to that floor rather than refused. |
@@ -148,10 +130,10 @@ throughput.
 
 This is built on `Request::HostUsage`, which arrived in shep's protocol 9.
 A shepherd older than that refuses the verb by name, and `/system` answers
-with an error instead of an embed. It does not affect anything else this
-dog does: a shepherd accepts any peer at or above its own `MIN_SUPPORTED`,
-which is still protocol 8, so `/shep` and `/monitor` work against a
-shepherd that has never heard of `HostUsage`.
+with an error instead of an embed. Nothing else this dog does is affected.
+A shepherd accepts any peer at or above its own `MIN_SUPPORTED`, and that
+is still protocol 8, so `/shep` and `/monitor` work against a shepherd that
+has never heard of `HostUsage`.
 
 ## Building from source
 
