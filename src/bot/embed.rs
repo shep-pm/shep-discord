@@ -34,7 +34,7 @@ use crate::{
 /// Discord's own ceiling on a component's `custom_id`, in characters.
 #[allow(
     dead_code,
-    reason = "read by custom_id's own debug_assert; unreached from main until Task 12's /shep list draws it"
+    reason = "read by custom_id's own debug_assert; unreached from main until Task 13's /monitor draws a sheep's buttons, one sheep per message"
 )]
 pub const CUSTOM_ID_LIMIT: usize = 100;
 
@@ -47,7 +47,7 @@ pub const CUSTOM_ID_LIMIT: usize = 100;
 /// dog's dash check exists for and this one is not meant to pass.
 #[allow(
     dead_code,
-    reason = "called by custom_id; unreached from main until Task 12's /shep list draws it"
+    reason = "called by custom_id; unreached from main until Task 13's /monitor draws a sheep's buttons, one sheep per message"
 )]
 fn verb_str(verb: Verb) -> &'static str {
     match verb {
@@ -89,7 +89,7 @@ fn verb_from_str(raw: &str) -> Option<Verb> {
 /// fail today.
 #[allow(
     dead_code,
-    reason = "called by process_buttons and Task 13's rediscovery; unreached from main until Task 12's /shep list draws it"
+    reason = "called by process_buttons and Task 13's rediscovery, which reads a sheep id back out of a button's custom_id; unreached from main until then"
 )]
 #[must_use]
 pub fn custom_id(verb: Verb, id: u32) -> String {
@@ -324,7 +324,7 @@ pub fn embed_character_count(info: &ProcessInfo) -> usize {
 /// sixth verb needs a second row, never a sixth button on this one.
 #[allow(
     dead_code,
-    reason = "called by Task 12's /shep list, whose embed is the first to draw a sheep's buttons; unreached from main until then"
+    reason = "called by Task 13's /monitor, which draws one sheep per message so its buttons never share a message's five-action-row cap with another sheep's; /shep list (Task 12) draws no buttons, since it packs several sheep per message on the character budget alone"
 )]
 pub fn process_buttons(info: &ProcessInfo) -> CreateActionRow {
     let button = |verb: Verb, label: &str, style: ButtonStyle| {
