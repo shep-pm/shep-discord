@@ -1,0 +1,60 @@
+name: test
+# Mirrors shep-log-rotate's own test.yml in shape. This dog has no lib
+# target and no integration tier: `--bins --tests` is the whole test shape,
+# there is no `--features integration` to skip on a fresh clone, and there
+# is nothing here for a matrix of operating systems to disagree about the
+# way file renames do in shep-log-rotate. One job answers each gate.
+#
+# Every job carries `timeout-minutes`: a ceiling against a hang, not a
+# performance budget. GitHub's default when absent is 360.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+      - run: cargo fmt --all -- --check
+      # `--all-targets` also reaches tests/probe.rs, which would otherwise
+      # go unlinted until something else enabled it.
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo doc --no-deps --all-features
+    env:
+      RUSTDOCFLAGS: -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      # No `--lib`: this crate has no lib target, and `cargo test --lib`
+      # errors out with "no library targets found" rather than skipping it.
+      - run: cargo test --locked --bins --tests
+
+  msrv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Matches `rust-version` in Cargo.toml, which matches shep's. A dog
+      # that needs a newer compiler than the daemon it serves is a bad
+      # example.
+      - run: rustup toolchain install 1.88 --profile minimal
+      - run: cargo +1.88 check --all-targets --all-features --locked
