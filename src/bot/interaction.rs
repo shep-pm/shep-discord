@@ -16,13 +16,15 @@
 //!
 //! What the dispatch decides once it has a hook to call, though, does not
 //! need a `Context` at all, and is what the tests below pin instead:
+//! [`hook_for`] is which hook one interaction kind reaches, the same
+//! function [`Handler::interaction_create`] itself calls to decide;
 //! [`report_failure`] is the fix for the swallowed follow-up at
 //! `interaction.ts:55`, and [`unknown_component_reply`] is what an
 //! unrecognised button gets told rather than silence.
 
 use serenity::all::{
     CommandInteraction, ComponentInteraction, Context, CreateInteractionResponseFollowup,
-    EventHandler, GuildId, Interaction, Ready,
+    EventHandler, GuildId, Interaction, InteractionType, Ready,
 };
 
 use crate::{
@@ -32,6 +34,37 @@ use crate::{
     },
     error::Error,
 };
+
+/// Which of a [`Command`]'s three hooks one interaction reaches, or none.
+///
+/// A pure function of [`Interaction::kind`] rather than of the whole
+/// [`Interaction`]: [`InteractionType`] is a plain, constructible enum, so a
+/// test can hand this every variant directly with no [`Context`], no
+/// gateway, and no hand-built [`CommandInteraction`] behind any of them.
+/// This is the one place that mapping is written down; the old test
+/// (`dispatch_kind`) hand-wrote a second copy of it against a spy, so the
+/// real `match` in [`Handler::interaction_create`] could drift from the
+/// test and the test would stay green regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hook {
+    Run,
+    Autocomplete,
+    Button,
+}
+
+fn hook_for(kind: InteractionType) -> Option<Hook> {
+    match kind {
+        InteractionType::Command => Some(Hook::Run),
+        InteractionType::Autocomplete => Some(Hook::Autocomplete),
+        InteractionType::Component => Some(Hook::Button),
+        // `Ping` only matters to a bot using an HTTP endpoint URL instead
+        // of a gateway connection, and no `Command` implements a modal
+        // (see this module's own trait doc for why one is not added on
+        // spec). `InteractionType` is `#[non_exhaustive]`, so the wildcard
+        // covers a variant serenity adds later too.
+        InteractionType::Ping | InteractionType::Modal | _ => None,
+    }
+}
 
 /// The text an unrecognised component gets told, rather than nothing.
 ///
@@ -186,38 +219,34 @@ impl EventHandler for Handler {
     /// Route one interaction to the `Command` it names, or answer that
     /// there is none.
     ///
-    /// A `match` on serenity's own five-variant enum replaces the ladder
-    /// of booleans `interaction.ts:12` reconstructed a kind from.
-    /// Everything except autocomplete defers ephemerally before the
-    /// lookup, as both source repos did: Discord gives three seconds, and
-    /// a [`crate::shepherd::Live`] call on a busy shepherd can outlast
-    /// that. Autocomplete answers with its own response type instead, so
+    /// [`hook_for`] decides which arm below runs; this `match` only
+    /// destructures the variant [`hook_for`] already named, so the two can
+    /// never disagree about which kind reaches which hook. Everything
+    /// except autocomplete defers ephemerally before the lookup, as both
+    /// source repos did: Discord gives three seconds, and a
+    /// [`crate::shepherd::Live`] call on a busy shepherd can outlast that.
+    /// Autocomplete answers with its own response type instead, so
     /// deferring first would ask Discord twice for the one interaction.
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        match interaction {
-            Interaction::Command(command_interaction) => {
+        match (hook_for(interaction.kind()), interaction) {
+            (Some(Hook::Run), Interaction::Command(command_interaction)) => {
                 self.handle_command(&ctx, &command_interaction).await;
             }
-            Interaction::Autocomplete(command_interaction) => {
+            (Some(Hook::Autocomplete), Interaction::Autocomplete(command_interaction)) => {
                 if let Some(command) = self.find(&command_interaction.data.name) {
                     command
                         .autocomplete(&ctx, &command_interaction, &self.state)
                         .await;
                 }
             }
-            Interaction::Component(component_interaction) => {
+            (Some(Hook::Button), Interaction::Component(component_interaction)) => {
                 self.handle_component(&ctx, &component_interaction).await;
             }
-            Interaction::Ping(_) | Interaction::Modal(_) => {
-                // Nothing this bot answers: `Ping` only matters to a bot
-                // using an HTTP endpoint URL instead of a gateway
-                // connection, and no `Command` implements a modal (see
-                // this crate's own trait doc for why one is not added on
-                // spec).
-            }
-            // `Interaction` is `#[non_exhaustive]`: serenity can add a
-            // sixth variant without a breaking change, and this dog
-            // answers nothing it does not yet know about rather than
+            // `None` covers `Ping` and `Modal`, nothing this bot answers,
+            // and any variant `hook_for` does not yet know about; the
+            // second arm of the tuple never mismatches the first in
+            // practice; `hook_for` and `Interaction::kind` agree by
+            // construction, and this catches anything else instead of
             // failing to compile against a future serenity release.
             _ => {}
         }
@@ -270,84 +299,48 @@ impl Handler {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-
     use super::*;
 
-    /// A `Command` double for these tests.
+    /// A `Command` double for [`a_failure_to_report_a_failure_still_reaches_stderr`]
+    /// and [`a_success_reports_nothing`] below.
     ///
     /// It never implements the real `Command` trait: every one of its
     /// hooks takes a `&Context`, which this module's own doc explains this
-    /// crate cannot construct outside serenity's own. Instead this records
-    /// which of its three actions last ran, directly, so
-    /// [`each_interaction_kind_reaches_its_own_hook`] can still pin the
-    /// mapping [`Handler::interaction_create`]'s own `match` makes between
-    /// an interaction kind and a hook name.
+    /// crate cannot construct outside serenity's own.
     #[derive(Default)]
     struct SpyCommand {
-        calls: Mutex<Vec<&'static str>>,
         fails: bool,
     }
 
     impl SpyCommand {
         fn failing() -> Self {
-            Self {
-                calls: Mutex::new(Vec::new()),
-                fails: true,
-            }
-        }
-
-        fn calls(&self) -> Vec<&'static str> {
-            self.calls.lock().expect("lock").clone()
+            Self { fails: true }
         }
 
         fn run(&self) -> Result<(), Error> {
-            self.calls.lock().expect("lock").push("run");
             if self.fails {
                 Err(Error::Config("the command itself failed".to_owned()))
             } else {
                 Ok(())
             }
         }
-
-        fn autocomplete(&self) {
-            self.calls.lock().expect("lock").push("autocomplete");
-        }
-
-        fn button(&self) {
-            self.calls.lock().expect("lock").push("button");
-        }
     }
 
-    /// Which of a `Command`'s three hooks one interaction kind routes to,
-    /// mirroring `Interaction`'s own shape.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Kind {
-        Command,
-        Autocomplete,
-        Component,
-    }
-
-    async fn dispatch_kind(spy: &SpyCommand, kind: Kind) {
-        match kind {
-            Kind::Command => {
-                let _ = spy.run();
-            }
-            Kind::Autocomplete => spy.autocomplete(),
-            Kind::Component => spy.button(),
-        }
-    }
-
-    /// serenity's `Interaction` enum replaces the ladder at
-    /// `interaction.ts:12`, which reconstructed which kind it held from
-    /// four booleans. This pins that each kind reaches its own hook.
-    #[tokio::test]
-    async fn each_interaction_kind_reaches_its_own_hook() {
-        let spy = SpyCommand::default();
-        dispatch_kind(&spy, Kind::Command).await;
-        dispatch_kind(&spy, Kind::Autocomplete).await;
-        dispatch_kind(&spy, Kind::Component).await;
-        assert_eq!(spy.calls(), vec!["run", "autocomplete", "button"]);
+    /// [`hook_for`] is what [`Handler::interaction_create`] itself calls to
+    /// decide which hook an interaction reaches, so pinning every
+    /// [`InteractionType`] against it here pins the real mapping rather
+    /// than a hand-written copy of it: there is only the one function, and
+    /// this is it under test.
+    #[test]
+    fn each_interaction_kind_reaches_its_own_hook() {
+        assert_eq!(hook_for(InteractionType::Command), Some(Hook::Run));
+        assert_eq!(
+            hook_for(InteractionType::Autocomplete),
+            Some(Hook::Autocomplete)
+        );
+        assert_eq!(hook_for(InteractionType::Component), Some(Hook::Button));
+        assert_eq!(hook_for(InteractionType::Ping), None);
+        assert_eq!(hook_for(InteractionType::Modal), None);
     }
 
     struct FailingResponder;
