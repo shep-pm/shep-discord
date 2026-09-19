@@ -2,26 +2,37 @@
 //!
 //! # Why this file exists for one small function
 //!
-//! This port has now been bitten by a Discord limit nine times:
-//! [`crate::bot::embed::custom_id`] found that a `custom_id` caps at 100
-//! characters, so a button keys on a numeric sheep id rather than a name;
-//! [`crate::stream::pack`] exists because the 6,000 character sum across
-//! every embed on one message is real, and treating it as an assumption
-//! rather than an enforced budget cost a whole fix round; the embed
-//! title's 256 character cap was caught in
-//! [`crate::bot::embed`] before this file existed; and
-//! [`crate::bot::embed::process_embed`] put an operator-chosen fold or smit
-//! into a field with no cap at all, the same shape of gap as an uncapped
-//! sheep name. A fifth followed in [`MESSAGE_CONTENT_LIMIT`]'s own doc
-//! comment, a sixth in [`EMBED_MAX_COUNT`], a seventh and eighth in
-//! `/shep`'s own autocomplete (Discord's 25-choices-per-response cap, kept
-//! local to that command since nothing else in this crate offers
-//! suggestions), and a ninth here in [`AUTOCOMPLETE_CHOICE_NAME_LIMIT`].
+//! Nine Discord limits have bitten this port. They are listed rather than
+//! counted in a sentence, because a running tally has to be renumbered
+//! every time one is added and the tenth is then one more line instead of
+//! a re-count of this paragraph:
+//!
+//! - `custom_id` caps at 100 characters, so a button keys on a numeric
+//!   sheep id rather than a name. The cap stays local to
+//!   [`crate::bot::embed`]; see below.
+//! - [`MESSAGE_CHARACTER_BUDGET`], the 6,000 character sum across every
+//!   embed on ONE message. [`crate::stream::pack`] exists for it, and
+//!   treating it as an assumption rather than an enforced budget cost a
+//!   whole fix round. `/shep list` is the second caller to need it.
+//! - [`EMBED_TITLE_LIMIT`], caught in [`crate::bot::embed`] before this
+//!   file existed.
+//! - [`FIELD_VALUE_LIMIT`]: [`crate::bot::embed::process_embed`] put an
+//!   operator-chosen fold or smit into a field with no cap at all, the
+//!   same shape of gap as an uncapped sheep name.
+//! - [`EMBED_DESCRIPTION_LIMIT`], for the same reason one field down.
+//! - [`MESSAGE_CONTENT_LIMIT`]: an error's `Display` went straight into a
+//!   followup's content with no bound of its own.
+//! - [`EMBED_MAX_COUNT`], ten embeds on one message. A listing of many
+//!   small sheep reaches it long before it reaches the character sum, so
+//!   a packer watching only characters would take a 400 for the count.
+//! - Discord's 25 suggestions per autocomplete response, kept local to
+//!   `/shep` since nothing else in this crate offers suggestions.
+//! - [`AUTOCOMPLETE_CHOICE_NAME_LIMIT`], the one case in this file where
+//!   cutting a string is the wrong answer; see its own doc comment.
+//!
 //! Nine encounters with one class of bug is a missing abstraction, not
 //! nine unrelated ones, so the caps live here once and [`fit`] is the one
-//! place a string gets cut down to one of them, where cutting is the
-//! right answer at all; see [`AUTOCOMPLETE_CHOICE_NAME_LIMIT`] for the one
-//! case here where it is not.
+//! place a string gets cut down to one of them.
 //!
 //! `custom_id`'s own 100 character cap stays where it is, in
 //! [`crate::bot::embed`]: nothing there needs truncating, since
