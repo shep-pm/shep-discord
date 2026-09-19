@@ -288,10 +288,16 @@ impl Handler {
         // the first one that will. Every command gets a chance at it
         // rather than a name encoded on the id, because `custom_id`
         // carries only a verb and a sheep id, never which command drew
-        // the button.
+        // the button. The interaction was already deferred ephemerally
+        // above, so a `Command::button` failure that only went to stderr
+        // left the user watching a spinner until Discord gave up on it;
+        // routing it through `report_failure` closes that the same way
+        // `handle_command` already does.
+        let responder = ComponentResponder { ctx, interaction };
         for command in &self.commands {
-            if let Err(err) = command.button(ctx, interaction, &self.state).await {
-                eprintln!("shep-discord: a button failed: {err}");
+            let outcome = command.button(ctx, interaction, &self.state).await;
+            for line in report_failure(command.name(), outcome, &responder).await {
+                eprintln!("{line}");
             }
         }
     }
