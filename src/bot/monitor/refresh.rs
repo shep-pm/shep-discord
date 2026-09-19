@@ -15,21 +15,44 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use shep_client::shep_core::values::UpDuration;
+use tokio::task::JoinHandle;
 
 use crate::{
-    // `Running` is private to the monitor module and visible here because
-    // this is one of its children: the task handle and the stop request
-    // belong to the engine's own field, and nothing outside gets to build
-    // one.
     bot::{
         channel,
-        monitor::{Board, Monitor, Running},
+        monitor::{Board, Monitor},
     },
     config::Config,
     error::Error,
     shepherd::Live,
-    stop::Stop,
+    stop::{self, Stop},
 };
+
+/// A running refresh task and the handle that ends it.
+///
+/// The handle is an `Option` because [`Monitor::stop`] has to take it out
+/// to await it while leaving this `Running` in the monitor's own field:
+/// `None` here means a stop is waiting for the task to drain, which
+/// [`Running::active`] counts as running for exactly as long as it takes.
+pub(super) struct Running {
+    pub(super) handle: Option<JoinHandle<()>>,
+    pub(super) request: stop::Request,
+}
+
+impl Running {
+    /// Whether this task should stop a new one being spawned beside it.
+    ///
+    /// True while the task is alive, and true while a [`Monitor::stop`]
+    /// holds its handle and waits for it to end. A finished task that
+    /// nothing has cleared yet is the only case that answers false, which
+    /// is what lets a refresh loop that returned on its own be replaced
+    /// without a stop first.
+    pub(super) fn active(&self) -> bool {
+        self.handle
+            .as_ref()
+            .is_none_or(|handle| !handle.is_finished())
+    }
+}
 
 /// Everything the refresh task needs to draw the flock.
 ///
@@ -234,10 +257,7 @@ mod tests {
         status::ProcStatus,
     };
 
-    use crate::{
-        bot::monitor::Running,
-        test_support::{CountingChannel, test_live},
-    };
+    use crate::test_support::{CountingChannel, test_live};
 
     use super::*;
 

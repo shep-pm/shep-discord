@@ -53,13 +53,12 @@ use std::{
 
 use serenity::all::MessageId;
 use shep_client::shep_core::protocol::ProcessInfo;
-use tokio::{sync::Mutex as AsyncMutex, task::JoinHandle};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
-    bot::{channel::Board, embed},
+    bot::{channel::Board, embed, monitor::refresh::Running},
     error::Error,
     shepherd::Live,
-    stop,
 };
 
 pub mod refresh;
@@ -92,32 +91,6 @@ struct Slot {
     /// compared against an earlier reading of itself, never interpreted,
     /// so wrapping is not a concern at one increment per delete.
     forgets: u64,
-}
-
-/// A running refresh task and the handle that ends it.
-///
-/// The handle is an `Option` because [`Monitor::stop`] has to take it out
-/// to await it while leaving this `Running` in the monitor's own field:
-/// `None` here means a stop is waiting for the task to drain, which
-/// [`Running::active`] counts as running for exactly as long as it takes.
-struct Running {
-    handle: Option<JoinHandle<()>>,
-    request: stop::Request,
-}
-
-impl Running {
-    /// Whether this task should stop a new one being spawned beside it.
-    ///
-    /// True while the task is alive, and true while a [`Monitor::stop`]
-    /// holds its handle and waits for it to end. A finished task that
-    /// nothing has cleared yet is the only case that answers false, which
-    /// is what lets a refresh loop that returned on its own be replaced
-    /// without a stop first.
-    fn active(&self) -> bool {
-        self.handle
-            .as_ref()
-            .is_none_or(|handle| !handle.is_finished())
-    }
 }
 
 impl Monitor {
