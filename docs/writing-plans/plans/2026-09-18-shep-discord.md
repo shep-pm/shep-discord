@@ -1164,13 +1164,16 @@ async fn each_interaction_kind_reaches_its_own_hook() {
 async fn a_failure_to_report_a_failure_still_reaches_stderr() {
     let spy = SpyCommand::failing();
     let reported = dispatch_with_broken_followup(&spy).await;
-    assert!(reported.contains("could not tell the user"), "{reported}");
+    // The whole line, not a fragment of it. Both of these strings are built
+    // by one function with no branches, so the output is knowable and a
+    // `contains` would pass on a sentence that said something else as well.
+    assert_eq!(reported, report_failure_line(&spy.error()));
 }
 
 #[tokio::test]
 async fn an_unknown_component_id_is_answered_rather_than_ignored() {
     let reply = dispatch_component("something:else").await;
-    assert!(reply.contains("not a button this bot wrote"), "{reply}");
+    assert_eq!(reply, unknown_component_reply());
 }
 ```
 
