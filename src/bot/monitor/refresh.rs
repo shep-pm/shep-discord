@@ -106,10 +106,7 @@ impl Refresh {
 /// [`tokio_util::sync::CancellationToken`]: https://docs.rs/tokio-util
 pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
     let mut task = monitor.task.lock().expect("not poisoned");
-    if task
-        .as_ref()
-        .is_some_and(|running| !running.handle.is_finished())
-    {
+    if task.as_ref().is_some_and(Running::active) {
         return false;
     }
 
@@ -174,7 +171,10 @@ pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
         }
     });
 
-    *task = Some(Running { handle, request });
+    *task = Some(Running {
+        handle: Some(handle),
+        request,
+    });
     true
 }
 
@@ -283,7 +283,10 @@ mod tests {
         // refresh loop, which would need a token and a channel behind it.
         let (mut stop, request) = Stop::new();
         let handle = tokio::spawn(async move { stop.wait().await });
-        *monitor.task.lock().expect("not poisoned") = Some(Running { handle, request });
+        *monitor.task.lock().expect("not poisoned") = Some(Running {
+            handle: Some(handle),
+            request,
+        });
 
         fake.expect(Request::ListFlock)
             .answer(Response::Flock(vec![info(1, "web"), info(2, "api")]));

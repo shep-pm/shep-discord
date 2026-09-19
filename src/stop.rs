@@ -101,7 +101,14 @@ impl Stop {
 
 impl Request {
     /// Ask every [`Stop`] made with this to stop.
-    pub fn request(self) {
+    ///
+    /// Takes `&self` rather than consuming, because
+    /// [`crate::bot::monitor::Monitor::stop`] fires this while the
+    /// `Running` that owns it stays in the monitor's own field: taking it
+    /// out to fire it is what used to leave a window where a concurrent
+    /// start saw no task. Asking twice is harmless; the watch channel
+    /// already holds `true`.
+    pub fn request(&self) {
         // Nothing to do if every Stop is already gone.
         let _ = self.0.send(true);
     }
