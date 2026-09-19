@@ -3,19 +3,19 @@
 //!
 //! # The three rules this file is built on
 //!
-//! **One message per sheep, ever.** A monitor that posts a second embed
-//! for a sheep it already drew leaves the first one behind, and nothing
-//! ever edits or deletes it again: it sits in the channel showing a
-//! process state that stopped being true the moment it was written. Every
-//! other decision here serves this one.
+//! **One message per sheep, ever.** A second embed for a sheep already
+//! drawn leaves the first behind, and nothing ever edits or deletes it
+//! again: it sits in the channel showing a process state that stopped
+//! being true the moment it was written. Every other decision here serves
+//! this one.
 //!
 //! **The cache lock is never held across an `await`.** [`Monitor`] holds
 //! its id-to-message map behind a `std::sync::Mutex`, locked only for the
-//! few synchronous reads and writes around a Discord call, never during
-//! one. A lock held across a round trip serialises every sheep behind the
-//! slowest edit, and a `std::sync::Mutex` guard held across an await does
-//! not compile in a spawned task anyway, which is the compiler enforcing
-//! the rule rather than a comment asking for it.
+//! reads and writes around a Discord call, never during one. A lock held
+//! across a round trip serialises every sheep behind the slowest edit, and
+//! such a guard is not `Send`, so a spawned task holding one does not
+//! compile: the compiler enforces this rule rather than a comment asking
+//! for it.
 //!
 //! **The guard is per sheep, not global.** Two updates for the SAME sheep
 //! must not both ask "is there a message yet", both hear no, and both
@@ -28,14 +28,13 @@
 //!
 //! # What a failed edit does, and does not, do
 //!
-//! A failed edit is reported and the cached id is kept. It is not
-//! followed by a fresh post. A transient failure heals itself on the next
-//! refresh, which edits the same id again; reposting instead would put a
-//! duplicate embed in the channel on every blip, and a duplicate is the
-//! one failure this file has no way to clean up. The cost is a monitor
-//! message somebody deleted by hand staying stale until the dog restarts,
-//! when [`crate::bot::channel::rediscover`] no longer finds it and the
-//! sheep is drawn fresh.
+//! A failed edit is reported and the cached id kept, never followed by a
+//! fresh post. A transient failure heals on the next refresh, which edits
+//! the same id again; reposting would put a duplicate in the channel on
+//! every blip, and a duplicate is the one failure this file cannot clean
+//! up. The cost is a message somebody deleted by hand staying stale until
+//! the dog restarts, when [`crate::bot::channel::rediscover`] no longer
+//! finds it and the sheep is drawn fresh.
 
 use core::time::Duration;
 use std::{
@@ -47,11 +46,14 @@ use serenity::all::MessageId;
 use shep_client::shep_core::protocol::{ProcessEventKind, ProcessInfo};
 use tokio::{sync::Mutex as AsyncMutex, task::JoinHandle};
 
+use shep_client::shep_core::values::UpDuration;
+
 use crate::{
     bot::{
         channel::{self, Board},
         embed,
     },
+    config::Config,
     error::Error,
     names::Names,
     shepherd::Live,
@@ -80,9 +82,8 @@ struct Running {
 
 /// Everything the refresh task needs to draw the flock.
 ///
-/// A struct rather than five parameters: [`start`] would otherwise take a
-/// board, a session, a name cache, a flag and a duration positionally, and
-/// two of those are easy to swap by mistake.
+/// A struct rather than five positional parameters to [`start`], two of
+/// which would be easy to swap by mistake.
 pub struct Refresh {
     /// Where the monitor draws.
     pub board: channel::Live,
@@ -95,6 +96,33 @@ pub struct Refresh {
     pub ignore_dogs: bool,
     /// How often the whole flock is redrawn.
     pub interval: Duration,
+}
+
+impl Refresh {
+    /// The refresh `config` describes, drawing on `channel` every
+    /// `interval`.
+    ///
+    /// `channel` and `interval` are passed rather than read from
+    /// `config` because the two callers disagree about both: the boot
+    /// start runs only when `dogs.toml` names an interval, while
+    /// `/monitor start` falls back to the floor. What they agree on is
+    /// what this reads.
+    #[must_use]
+    pub fn new(
+        config: &Config,
+        channel: u64,
+        interval: UpDuration,
+        live: &Arc<Live>,
+        names: &Arc<Mutex<Names>>,
+    ) -> Self {
+        Self {
+            board: channel::Live::new(&config.token, channel),
+            live: Arc::clone(live),
+            names: Arc::clone(names),
+            ignore_dogs: config.ignore_dogs,
+            interval: Duration::from_millis(interval.as_millis()),
+        }
+    }
 }
 
 impl Monitor {
@@ -112,8 +140,8 @@ impl Monitor {
     /// channel, as [`crate::bot::channel::rediscover`] found them.
     ///
     /// Merges rather than replaces: a sheep drawn since the task started
-    /// keeps the id it just posted, since that message is newer than
-    /// anything the fetch could have seen.
+    /// keeps the id it just posted, which is newer than anything the
+    /// fetch could have seen.
     pub fn adopt(&self, found: HashMap<u32, MessageId>) {
         let mut messages = self.messages.lock().expect("not poisoned");
         for (sheep, message) in found {
@@ -129,12 +157,12 @@ impl Monitor {
     /// point of it. The map it lives in is a plain `std::sync::Mutex`,
     /// locked only long enough to clone one `Arc` out of it.
     ///
-    /// Entries are never removed, not even by [`Monitor::forget`]. A
+    /// Entries are never removed, not even by [`Monitor::forget`]: a
     /// caller already waiting holds a clone of the `Arc`, so dropping the
-    /// map's entry would let the NEXT caller mint a fresh, uncontended
-    /// lock and post while the first call is still in flight, which is the
-    /// duplicate this guard exists to prevent. The map is bounded by how
-    /// many sheep ids this dog has ever seen, a pointer each.
+    /// entry would let the NEXT caller mint a fresh, uncontended lock and
+    /// post while the first call is still in flight, which is the
+    /// duplicate this guard exists to prevent. One pointer per sheep id
+    /// ever seen.
     fn guard_for(&self, id: u32) -> Arc<AsyncMutex<()>> {
         Arc::clone(
             self.guards
@@ -184,13 +212,12 @@ impl Monitor {
     /// Delete the monitor message for the sheep `id` names, if it has
     /// one.
     ///
-    /// No `Result`: a delete that failed leaves a message the next
-    /// rediscovery adopts and the sheep is gone either way, so there is
-    /// nothing a caller could usefully do with the error that printing it
-    /// here does not already do. The cached id is dropped whether or not
-    /// the delete succeeds, so a sheep deleted and recreated under the
-    /// same id is drawn fresh rather than edited into a message that may
-    /// no longer exist.
+    /// No `Result`: a failed delete leaves a message the next rediscovery
+    /// adopts and the sheep is gone either way, so there is nothing a
+    /// caller could do with the error that printing it here does not. The
+    /// cached id is dropped whether or not the delete succeeds, so a
+    /// sheep recreated under the same id is drawn fresh rather than
+    /// edited into a message that may no longer exist.
     pub async fn forget<B: Board>(&self, board: &B, id: u32) {
         // The same guard `update_one` takes, so a delete cannot land
         // between that function reading an empty cache and writing the id
@@ -211,15 +238,13 @@ impl Monitor {
     /// and delete the message of every sheep that is no longer there.
     ///
     /// One sheep's failed draw is printed and the rest are still drawn: a
-    /// single sheep whose embed Discord refuses must not stop the other
-    /// ninety-nine from being current, and the next refresh tries it
-    /// again.
+    /// single embed Discord refuses must not leave the other ninety-nine
+    /// stale, and the next refresh tries it again.
     ///
     /// The name cache is refreshed from the whole roll, dogs included,
     /// even when `ignore_dogs` keeps them out of the monitor: [`Names`] is
-    /// shared with the log stream, which renders a line by whatever id it
-    /// arrives under, and a cache missing the dogs would render those
-    /// lines under a placeholder.
+    /// shared with the log stream, and a cache missing the dogs would
+    /// render their lines under a placeholder.
     ///
     /// # Errors
     /// Whatever [`Live::flock`] could not answer. Nothing after that read
@@ -276,14 +301,13 @@ impl Monitor {
 
     /// End the refresh task, and say whether there was one.
     ///
-    /// Asks rather than aborts: the task's own `select!` is biased on the
-    /// stop, so it returns at the top of its next turn around the loop. A
-    /// refresh already in flight finishes its Discord calls first, which
-    /// is the difference between a monitor that stops and one that stops
-    /// half way through a redraw with an embed posted and its id not yet
-    /// cached. The only path this cannot end promptly is a Discord
-    /// request that never returns, and serenity's own HTTP client times
-    /// out rather than hanging forever.
+    /// Asks rather than aborts: the task's `select!` is biased on the
+    /// stop, so it returns at the top of its next turn around the loop,
+    /// and a refresh already in flight finishes its Discord calls first
+    /// rather than stopping half way through a redraw with an embed
+    /// posted and its id not yet cached. The only path this cannot end
+    /// promptly is a Discord request that never returns, and serenity's
+    /// HTTP client times out rather than hanging forever.
     pub fn stop(&self) -> bool {
         let Some(running) = self.task.lock().expect("not poisoned").take() else {
             return false;
@@ -388,6 +412,29 @@ pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
     true
 }
 
+/// Start the monitor `dogs.toml` asks to run from boot, and say whether
+/// one is now running.
+///
+/// `false`, having done nothing, when the config does not ask: an
+/// interval with no channel has nowhere to draw, and a channel with no
+/// interval is an operator saying the monitor runs on demand through
+/// `/monitor start` rather than from boot. Called once by the run loop
+/// rather than on every config reread; see that call site for why.
+pub fn start_from_config(
+    monitor: &Arc<Monitor>,
+    config: &Config,
+    live: &Arc<Live>,
+    names: &Arc<Mutex<Names>>,
+) -> bool {
+    let (Some(interval), Some(channel)) = (config.monitor_interval, config.monitor_channel) else {
+        return false;
+    };
+    start(
+        monitor,
+        Refresh::new(config, channel, interval, live, names),
+    )
+}
+
 /// A monitor and the channel it draws on, for the bus-event side of this
 /// dog.
 ///
@@ -411,13 +458,11 @@ enum Redraw {
 /// What `kind` asks the monitor to do, or `None` for an event that changes
 /// nothing a monitor message shows.
 ///
-/// A pure function of the event kind so the whole table is testable with
-/// no bus, no board and no session. The six kinds here are the ones that
-/// change whether a sheep is running or whether it exists at all;
-/// `Reload`, `Reloaded`, `ReloadAbandoned` and `Errored` are left to the
-/// interval refresh rather than drawn on sight, because each of them
-/// arrives in a burst around a restart that already draws, and the
-/// interval is what makes the monitor eventually right regardless.
+/// A pure function of the event kind, so the whole table is testable with
+/// no bus, no board and no session. The six kinds here change whether a
+/// sheep is running or whether it exists at all; `Reload`, `Reloaded`,
+/// `ReloadAbandoned` and `Errored` are left to the interval refresh, since
+/// each arrives in a burst around a restart that already draws.
 fn action_for(kind: ProcessEventKind) -> Option<Redraw> {
     match kind {
         ProcessEventKind::Start
@@ -433,9 +478,9 @@ fn action_for(kind: ProcessEventKind) -> Option<Redraw> {
 impl Wired {
     /// Redraw, or remove, the sheep one bus event names.
     ///
-    /// Does nothing at all while the monitor is off, the gate the old code
-    /// kept at `ready.ts:28`: an operator who has not started the monitor
-    /// gets no messages in a channel from a bus event either.
+    /// Does nothing while the monitor is off, the gate the old code kept
+    /// at `ready.ts:28`: an operator who has not started the monitor gets
+    /// no messages from a bus event either.
     pub async fn on_process_event(&self, kind: ProcessEventKind, info: &ProcessInfo) {
         if !self.monitor.is_running() {
             return;
@@ -675,6 +720,29 @@ mod tests {
             ProcessEventKind::Errored,
         ] {
             assert_eq!(action_for(kind), None, "{kind:?}");
+        }
+    }
+
+    /// A config that names no channel, or no interval, asks for no monitor
+    /// from boot, and must not leave a task running behind it.
+    #[tokio::test]
+    async fn a_config_that_does_not_ask_for_a_boot_monitor_starts_nothing() {
+        let (live, _fake) = test_live().await;
+        let live = Arc::new(live);
+        let names = Arc::new(Mutex::new(Names::new()));
+        let monitor = Arc::new(Monitor::new());
+
+        for toml in [
+            "token = \"t\"\nguild_id = 1\n",
+            "token = \"t\"\nguild_id = 1\nmonitor_channel = 7\n",
+            "token = \"t\"\nguild_id = 1\nmonitor_interval = \"1m\"\n",
+        ] {
+            let config = Config::from_toml(toml).expect("parsed");
+            assert!(
+                !start_from_config(&monitor, &config, &live, &names),
+                "{toml:?} does not ask for a monitor from boot"
+            );
+            assert!(!monitor.is_running());
         }
     }
 }

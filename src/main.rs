@@ -305,18 +305,11 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // loop is the only caller of, and a static hides that state from every
     // test that would otherwise exercise it. See `session::warn_once`.
     let mut unresolved_warned = false;
-    // One monitor for the whole process, built before the loop so a
-    // reconnect or a config reread keeps the message ids it has already
-    // cached: losing them would make the next refresh post a second embed
-    // beside every one already in the channel. Shared with the gateway
-    // task through `bot::command::State`.
+    // Outlive every cycle: a reconnect that lost the cached message ids
+    // would post a second embed beside each one already in the channel.
     let monitor = Arc::new(bot::monitor::Monitor::new());
-    // Whether the boot start below has already had its one turn. See the
-    // comment there for why it is once rather than per cycle.
-    let mut monitor_started = false;
-    // The name cache the gateway, the monitor's own refresh and the log
-    // stream all read; owned here for the same reason `monitor` is.
     let names = Arc::new(Mutex::new(Names::new()));
+    let mut monitor_started = false;
     // `Some` while the gateway task is running; see the doc above for why
     // it starts once rather than on every cycle. Cleared back to `None`
     // the cycle after the task finishes, panic or not, so a gateway that
@@ -398,38 +391,11 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         )));
                     }
 
-                    // Started once, on the first cycle that resolves a
-                    // config asking for it, rather than on every cycle:
-                    // an operator who ran `/monitor stop` must not have
-                    // the monitor restarted underneath them thirty
-                    // seconds later by a loop rereading the same
-                    // `dogs.toml`. `monitor_interval` is what says "run
-                    // this from boot"; `/monitor start` is the runtime
-                    // override, and it says in its own reply that it is
-                    // not written anywhere.
-                    if !monitor_started
-                        && let (Some(interval), Some(channel)) =
-                            (config.monitor_interval, config.monitor_channel)
-                    {
-                        // The attempt is what is recorded, not its
-                        // outcome: a start that found one already running
-                        // (an operator who was quicker with `/monitor
-                        // start` than this loop was to resolve a config)
-                        // has still had its turn, and retrying on the
-                        // next cycle would restart the monitor underneath
-                        // an operator again, which is what this flag
-                        // exists to prevent.
+                    // Once, not per cycle: starting again on every reread
+                    // would restart a monitor an operator had stopped.
+                    if !monitor_started {
                         monitor_started = true;
-                        bot::monitor::start(
-                            &monitor,
-                            bot::monitor::Refresh {
-                                board: bot::channel::Live::new(&config.token, channel),
-                                live: Arc::clone(live),
-                                names: Arc::clone(&names),
-                                ignore_dogs: config.ignore_dogs,
-                                interval: Duration::from_millis(interval.as_millis()),
-                            },
-                        );
+                        bot::monitor::start_from_config(&monitor, &config, live, &names);
                     }
 
                     // Streaming only when a channel names somewhere to send

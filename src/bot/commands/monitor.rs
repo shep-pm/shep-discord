@@ -11,8 +11,8 @@
 //! the dash check reach the text, and what lets a test read the reply
 //! without a `Context` to answer through.
 
-use core::{future::Future, time::Duration};
-use std::{pin::Pin, sync::Arc};
+use core::future::Future;
+use std::pin::Pin;
 
 use serenity::all::{
     CommandInteraction, CommandOptionType, Context, CreateCommand, CreateCommandOption,
@@ -22,7 +22,6 @@ use shep_client::shep_core::values::UpDuration;
 
 use crate::{
     bot::{
-        channel,
         command::{Command, State},
         monitor::{self, Refresh},
     },
@@ -122,22 +121,16 @@ impl MonitorCommand {
 
     /// Start the refresh task, and say what happened.
     ///
-    /// Builds its own [`channel::Live`] from the token and channel in the
-    /// resolved config: a board is an [`serenity::all::Http`] and a channel
-    /// id, neither of which reaches the network until the first request,
-    /// so there is nothing to hold open between starts.
+    /// Builds a fresh [`Refresh`] rather than holding one: a board is an
+    /// HTTP client and a channel id, neither of which reaches the network
+    /// until the first request, so there is nothing to keep open between
+    /// starts.
     fn start(&self, state: &State) -> String {
         let Some(channel) = state.config.monitor_channel else {
             return no_channel_message().to_owned();
         };
         let interval = interval_for(state.config.monitor_interval);
-        let refresh = Refresh {
-            board: channel::Live::new(&state.config.token, channel),
-            live: Arc::clone(&state.live),
-            names: Arc::clone(&state.names),
-            ignore_dogs: state.config.ignore_dogs,
-            interval: Duration::from_millis(interval.as_millis()),
-        };
+        let refresh = Refresh::new(&state.config, channel, interval, &state.live, &state.names);
         if monitor::start(&state.monitor, refresh) {
             started_reply(&interval.to_string())
         } else {
