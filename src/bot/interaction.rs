@@ -33,6 +33,7 @@ use crate::{
         embed::parse_custom_id,
     },
     error::Error,
+    limits,
 };
 
 /// Which of a [`Command`]'s three hooks one interaction reaches, or none.
@@ -137,17 +138,53 @@ impl Responder for ComponentResponder<'_> {
     }
 }
 
+/// The stderr line printed for a command or button that itself failed.
+fn command_failed_message(label: &str, err: &Error) -> String {
+    format!("shep-discord: /{label} failed: {err}")
+}
+
+/// The stderr line printed when telling the user about `context` also
+/// failed.
+///
+/// One function for both places this dog tries to tell a user something
+/// and has to fall back to stderr when that also fails: [`report_failure`]
+/// below, and the unknown-button path in [`Handler::handle_component`].
+/// Those two used to be shaped slightly differently by hand; there is
+/// nothing about either failure that needs its own wording, so one
+/// function answers both.
+fn could_not_tell_the_user_message(context: &str, err: &Error) -> String {
+    format!("shep-discord: {context}: could not tell the user: {err}")
+}
+
+/// Tell the user `message` through `responder`, and hand back the stderr
+/// line to print if telling them also fails, so no attempt to say
+/// something to a user is ever silent on both ends at once.
+///
+/// The old code ended this exact path at `.catch(() => {})`
+/// (`interaction.ts:55`): a failed followup vanished with nothing on
+/// stderr, so an operator watching this dog's own output saw silence
+/// twice over, once from the original failure and again from failing to
+/// say so.
+async fn tell_or_log(context: &str, message: &str, responder: &impl Responder) -> Option<String> {
+    responder
+        .tell(message)
+        .await
+        .err()
+        .map(|err| could_not_tell_the_user_message(context, &err))
+}
+
 /// Tell the user about `outcome`'s failure, and make sure telling them is
 /// never silent either, returning every line for the caller to print.
 ///
 /// A pure function of `outcome` and `responder` rather than an inline
 /// `eprintln!`, on the usual reason: it lets a test drive the swallowed
 /// follow-up fix with a `responder` that always fails, with no `Context`
-/// and no gateway behind either. The old code ended this exact path at
-/// `.catch(() => {})` (`interaction.ts:55`): a failed followup vanished
-/// with nothing on stderr, so an operator watching this dog's own output
-/// saw silence twice over, once from the command's own failure and again
-/// from failing to say so.
+/// and no gateway behind either.
+///
+/// The followup content is passed through [`limits::fit`] before it ever
+/// reaches `responder`: `err`'s own `Display` is not bounded, and Discord
+/// caps a message's content at [`limits::MESSAGE_CONTENT_LIMIT`]
+/// characters.
 async fn report_failure(
     label: &str,
     outcome: Result<(), Error>,
@@ -156,14 +193,13 @@ async fn report_failure(
     let Err(err) = outcome else {
         return Vec::new();
     };
-    let mut lines = vec![format!("shep-discord: /{label} failed: {err}")];
-    if let Err(followup_err) = responder
-        .tell(&format!("Something went wrong: {err}"))
-        .await
-    {
-        lines.push(format!(
-            "shep-discord: /{label} failed and could not tell the user either: {followup_err}"
-        ));
+    let mut lines = vec![command_failed_message(label, &err)];
+    let content = limits::fit(
+        &format!("Something went wrong: {err}"),
+        limits::MESSAGE_CONTENT_LIMIT,
+    );
+    if let Some(line) = tell_or_log(&format!("/{label} failed"), &content, responder).await {
+        lines.push(line);
     }
     lines
 }
@@ -276,10 +312,12 @@ impl Handler {
             eprintln!("shep-discord: could not defer a button: {err}");
             return;
         }
+        let responder = ComponentResponder { ctx, interaction };
         if parse_custom_id(&interaction.data.custom_id).is_none() {
-            let responder = ComponentResponder { ctx, interaction };
-            if let Err(err) = responder.tell(unknown_component_reply()).await {
-                eprintln!("shep-discord: could not tell the user about an unknown button: {err}");
+            if let Some(line) =
+                tell_or_log("an unknown button", unknown_component_reply(), &responder).await
+            {
+                eprintln!("{line}");
             }
             return;
         }
@@ -293,7 +331,6 @@ impl Handler {
         // left the user watching a spinner until Discord gave up on it;
         // routing it through `report_failure` closes that the same way
         // `handle_command` already does.
-        let responder = ComponentResponder { ctx, interaction };
         for command in &self.commands {
             let outcome = command.button(ctx, interaction, &self.state).await;
             for line in report_failure(command.name(), outcome, &responder).await {
@@ -305,32 +342,9 @@ impl Handler {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
-
-    /// A `Command` double for [`a_failure_to_report_a_failure_still_reaches_stderr`]
-    /// and [`a_success_reports_nothing`] below.
-    ///
-    /// It never implements the real `Command` trait: every one of its
-    /// hooks takes a `&Context`, which this module's own doc explains this
-    /// crate cannot construct outside serenity's own.
-    #[derive(Default)]
-    struct SpyCommand {
-        fails: bool,
-    }
-
-    impl SpyCommand {
-        fn failing() -> Self {
-            Self { fails: true }
-        }
-
-        fn run(&self) -> Result<(), Error> {
-            if self.fails {
-                Err(Error::Config("the command itself failed".to_owned()))
-            } else {
-                Ok(())
-            }
-        }
-    }
 
     /// [`hook_for`] is what [`Handler::interaction_create`] itself calls to
     /// decide which hook an interaction reaches, so pinning every
@@ -357,30 +371,95 @@ mod tests {
         }
     }
 
+    /// A [`Responder`] double that records the last message it was told,
+    /// so a test can check exactly what a caller handed it rather than
+    /// only whether telling succeeded.
+    #[derive(Default)]
+    struct RecordingResponder {
+        seen: Mutex<Option<String>>,
+    }
+
+    impl RecordingResponder {
+        fn seen(&self) -> Option<String> {
+            self.seen.lock().expect("lock").clone()
+        }
+    }
+
+    impl Responder for RecordingResponder {
+        async fn tell(&self, message: &str) -> Result<(), Error> {
+            *self.seen.lock().expect("lock") = Some(message.to_owned());
+            Ok(())
+        }
+    }
+
     /// The old code ended this path in `.catch(() => {})` at
     /// `interaction.ts:55`, so a failure to report a failure vanished.
+    /// Equality against [`command_failed_message`] and
+    /// [`could_not_tell_the_user_message`] pins the exact lines this path
+    /// prints, not merely that some substring of them showed up.
     #[tokio::test]
     async fn a_failure_to_report_a_failure_still_reaches_stderr() {
-        let spy = SpyCommand::failing();
-        let lines = report_failure("system", spy.run(), &FailingResponder).await;
-        let reported = lines.join("\n");
-        assert!(reported.contains("could not tell the user"), "{reported}");
+        let command_err = Error::Config("the command itself failed".to_owned());
+        let followup_err = Error::Config("the followup itself failed".to_owned());
+        let lines = report_failure("system", Err(command_err), &FailingResponder).await;
+        assert_eq!(
+            lines,
+            vec![
+                command_failed_message(
+                    "system",
+                    &Error::Config("the command itself failed".to_owned())
+                ),
+                could_not_tell_the_user_message("/system failed", &followup_err),
+            ]
+        );
     }
 
     /// A successful outcome reports nothing: there is no failure to tell
     /// anyone about.
     #[tokio::test]
     async fn a_success_reports_nothing() {
-        let spy = SpyCommand::default();
-        let lines = report_failure("system", spy.run(), &FailingResponder).await;
+        let lines = report_failure("system", Ok(()), &FailingResponder).await;
         assert!(lines.is_empty(), "{lines:?}");
     }
 
+    /// A followup whose content would exceed Discord's own limit is fitted
+    /// to it before `report_failure` ever hands it to a [`Responder`].
+    #[tokio::test]
+    async fn a_followup_message_fits_discords_own_content_limit() {
+        let huge = "x".repeat(3000);
+        let responder = RecordingResponder::default();
+        let _ = report_failure("system", Err(Error::Config(huge)), &responder).await;
+        let seen = responder.seen().expect("report_failure told the user");
+        assert!(seen.chars().count() <= limits::MESSAGE_CONTENT_LIMIT);
+    }
+
+    /// An unrecognised `custom_id` is answered with [`unknown_component_reply`]
+    /// through [`tell_or_log`], the exact message and nothing else.
     #[tokio::test]
     async fn an_unknown_component_id_is_answered_rather_than_ignored() {
         assert!(parse_custom_id("something:else").is_none());
-        let reply = unknown_component_reply();
-        assert!(reply.contains("not a button this bot wrote"), "{reply}");
+        let responder = RecordingResponder::default();
+        let line = tell_or_log("an unknown button", unknown_component_reply(), &responder).await;
+        assert_eq!(line, None);
+        assert_eq!(responder.seen(), Some(unknown_component_reply().to_owned()));
+    }
+
+    /// When telling the user about an unknown button also fails, the
+    /// returned line matches [`could_not_tell_the_user_message`] exactly.
+    #[tokio::test]
+    async fn telling_an_unknown_button_user_logs_when_that_also_fails() {
+        let followup_err = Error::Config("the followup itself failed".to_owned());
+        let line = tell_or_log(
+            "an unknown button",
+            unknown_component_reply(),
+            &FailingResponder,
+        )
+        .await
+        .expect("a failing responder is reported");
+        assert_eq!(
+            line,
+            could_not_tell_the_user_message("an unknown button", &followup_err)
+        );
     }
 
     #[test]

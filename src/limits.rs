@@ -45,6 +45,14 @@ pub const FIELD_VALUE_LIMIT: usize = 1024;
 /// `field.value`, `footer.text` and `author.name`. Discord's own limit.
 pub const MESSAGE_CHARACTER_BUDGET: usize = 6000;
 
+/// The longest a message's own `content` field may be, separate from
+/// anything an embed carries. Discord's own limit, and the sixth of its
+/// length limits this port has run into: an error's `Display` is
+/// interpolated straight into a followup's `content` in
+/// `crate::bot::interaction::report_failure`, with no bound of its own
+/// before this cap was named here.
+pub const MESSAGE_CONTENT_LIMIT: usize = 2000;
+
 /// Truncate `text` to at most `limit` characters, ending in a single
 /// `'\u{2026}'` ellipsis when it had to cut anything.
 ///
