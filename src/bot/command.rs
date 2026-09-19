@@ -43,7 +43,7 @@ pub struct State {
     pub config: Arc<Config>,
     #[allow(
         dead_code,
-        reason = "read once a command needs to resolve a sheep's name, in Task 12's /shep; /system needs no name lookup"
+        reason = "read once a command needs to resolve a sheep's name from a numeric id; Task 12's /shep turned out not to need one, since every verb takes a name directly and it draws no buttons (see its own module doc), so this is still unread"
     )]
     pub names: Arc<Mutex<Names>>,
 }
@@ -125,11 +125,14 @@ pub trait Command: Send + Sync {
 /// Every slash command this dog answers, boxed so [`register`] and
 /// [`crate::bot::interaction::Handler`] can hold them in one collection.
 ///
-/// `/system` is the first entry. Task 12 adds `/shep` and Task 13 adds
+/// `/system` and `/shep` are the first two entries. Task 13 adds
 /// `/monitor`.
 #[must_use]
 pub fn registry() -> Vec<Box<dyn Command>> {
-    vec![Box::new(crate::bot::commands::system::System)]
+    vec![
+        Box::new(crate::bot::commands::system::System),
+        Box::new(crate::bot::commands::shep::ShepCommand),
+    ]
 }
 
 /// Register every command in `commands` with `guild_id`, replacing
@@ -214,13 +217,14 @@ mod tests {
         }
     }
 
-    /// `/system` is the first command this dog registers. Task 12 and
-    /// Task 13 add `/shep` and `/monitor`; this pins that the registry
-    /// carries exactly the one command this task adds, rather than the
-    /// two generic tests above passing vacuously against an empty one.
+    /// `/system` and `/shep` are the first two commands this dog
+    /// registers. Task 13 adds `/monitor`; this pins that the registry
+    /// carries exactly the two commands built so far, rather than the two
+    /// generic tests above passing vacuously against an empty or
+    /// incomplete one.
     #[test]
-    fn the_registry_carries_the_system_command() {
+    fn the_registry_carries_every_command_built_so_far() {
         let names: Vec<&'static str> = registry().iter().map(|c| c.name()).collect();
-        assert_eq!(names, vec!["system"]);
+        assert_eq!(names, vec!["system", "shep"]);
     }
 }
