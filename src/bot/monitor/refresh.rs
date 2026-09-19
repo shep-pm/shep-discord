@@ -138,8 +138,28 @@ pub fn start(monitor: &Arc<Monitor>, refresh: Refresh) -> bool {
         // A failed rediscovery is printed and the monitor carries on with
         // an empty cache: drawing a duplicate is worse than an unanswered
         // fetch, but not drawing at all is worse than both.
+        //
+        // The flock is read first because rediscovery pages, and knowing
+        // which sheep it is looking for is what lets it stop paging as
+        // soon as it has found them all rather than reading the channel
+        // to its beginning. A failed read leaves an empty list, which
+        // costs one page; see `channel::rediscover`. The ticker's first
+        // tick reads the roll again a moment later, which is one extra
+        // request on a monitor's whole lifetime and not worth threading
+        // this snapshot through `update_all` to avoid.
+        let wanted: Vec<u32> = match live.flock().await {
+            Ok(roll) => roll
+                .iter()
+                .filter(|info| !ignore_dogs || info.dog.is_none())
+                .map(|info| info.id)
+                .collect(),
+            Err(err) => {
+                eprintln!("shep-discord: {err}");
+                Vec::new()
+            }
+        };
         match board.me().await {
-            Ok(me) => match channel::rediscover(&board, me).await {
+            Ok(me) => match channel::rediscover(&board, me, &wanted).await {
                 Ok(found) => monitor.adopt(found),
                 Err(err) => eprintln!("shep-discord: {err}"),
             },

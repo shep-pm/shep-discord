@@ -15,7 +15,7 @@ use shep_client::{
 use tokio::sync::mpsc;
 
 use crate::{
-    bot::channel::{Board, Posted},
+    bot::channel::{Board, Posted, RECENT_MESSAGE_LIMIT},
     error::Error,
     limits::EMBED_TITLE_LIMIT,
     shepherd::Live,
@@ -80,6 +80,7 @@ struct ChannelLog {
     deletes: usize,
     next_id: u64,
     recent: Vec<Posted>,
+    pages: usize,
     posted: Vec<CreateEmbed>,
     deleted: Vec<MessageId>,
 }
@@ -102,6 +103,13 @@ impl CountingChannel {
 
     pub fn edits(&self) -> usize {
         self.state.lock().expect("not poisoned").edits
+    }
+
+    /// How many pages of past messages were fetched, for a test that
+    /// cares that rediscovery stopped paging rather than only that it
+    /// found everything.
+    pub fn pages(&self) -> usize {
+        self.state.lock().expect("not poisoned").pages
     }
 
     pub fn deletes(&self) -> usize {
@@ -162,9 +170,28 @@ impl Board for CountingChannel {
         Ok(())
     }
 
-    async fn recent(&self) -> Result<Vec<Posted>, Error> {
+    /// One page of `recent`, the same slicing Discord does: the newest
+    /// [`RECENT_MESSAGE_LIMIT`] messages, or that many from just after the
+    /// one `before` names, since `preload` is given them newest first.
+    async fn recent(&self, before: Option<MessageId>) -> Result<Vec<Posted>, Error> {
         tokio::task::yield_now().await;
-        Ok(self.state.lock().expect("not poisoned").recent.clone())
+        let mut state = self.state.lock().expect("not poisoned");
+        state.pages += 1;
+        let start = match before {
+            None => 0,
+            Some(id) => state
+                .recent
+                .iter()
+                .position(|message| message.id == id)
+                .map_or(state.recent.len(), |at| at + 1),
+        };
+        Ok(state
+            .recent
+            .iter()
+            .skip(start)
+            .take(usize::from(RECENT_MESSAGE_LIMIT))
+            .cloned()
+            .collect())
     }
 }
 

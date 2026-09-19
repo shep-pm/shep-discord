@@ -36,15 +36,17 @@ use serenity::all::{
 
 use crate::{bot::embed::parse_custom_id, error::Error};
 
-/// How many past messages [`rediscover`] reads.
+/// How many past messages one [`Board::recent`] call reads.
 ///
-/// Discord's own per-fetch ceiling, and the same number the old code used
-/// (`utils.ts:41`). A flock with more sheep than this cannot be adopted
-/// whole after a restart: the messages past the hundredth stay in the
-/// channel, unread by this dog, and the monitor posts a second message for
-/// those sheep. Paginating with `GetMessages::before` would close that,
-/// and is deliberately not done here; see the task report.
-const RECENT_MESSAGE_LIMIT: u8 = 100;
+/// Discord's own per-fetch ceiling. The old code used the same number
+/// (`utils.ts:41`) and stopped there, but it was sweeping the channel with
+/// a bulk delete, where missing a message cost nothing because the next
+/// sweep caught it. Here a miss is permanent: a sheep whose message was
+/// not seen gets a second one posted, and nothing ever cleans up the
+/// first, so one unpaginated fetch would cost a flock of more than a
+/// hundred sheep one orphan per sheep per restart. [`rediscover`] pages
+/// instead, and this is the size of one page.
+pub const RECENT_MESSAGE_LIMIT: u8 = 100;
 
 /// One past message in the monitor channel, reduced to the three facts
 /// [`rediscover`] reads.
@@ -106,12 +108,21 @@ pub trait Board {
     /// [`Error::Discord`] when Discord refuses the delete.
     fn delete(&self, id: MessageId) -> impl Future<Output = Result<(), Error>> + Send;
 
-    /// The most recent [`RECENT_MESSAGE_LIMIT`] messages in the channel,
-    /// newest first, reduced to what [`rediscover`] reads.
+    /// One page of the channel's past messages, newest first, reduced to
+    /// what [`rediscover`] reads: the newest [`RECENT_MESSAGE_LIMIT`] of
+    /// them, or the same many from just before the message `before`
+    /// names.
+    ///
+    /// A page rather than "the recent ones", because one fetch cannot
+    /// cover a channel with more sheep in it than Discord will hand back
+    /// at once; see [`RECENT_MESSAGE_LIMIT`].
     ///
     /// # Errors
     /// [`Error::Discord`] when Discord refuses the read.
-    fn recent(&self) -> impl Future<Output = Result<Vec<Posted>, Error>> + Send;
+    fn recent(
+        &self,
+        before: Option<MessageId>,
+    ) -> impl Future<Output = Result<Vec<Posted>, Error>> + Send;
 }
 
 /// Which sheep `message` is the monitor message for, or `None` for a
@@ -135,27 +146,71 @@ pub fn sheep_id_of(message: &Posted) -> Option<u32> {
 /// it belongs to.
 ///
 /// Keeps the newest message for a sheep and leaves any older duplicate
-/// alone rather than deleting it: `recent` answers newest first, so the
+/// alone rather than deleting it: a page answers newest first, so the
 /// first entry for an id is the one an operator is looking at, and this
 /// function reads the channel rather than changing it. A duplicate can
 /// only exist where a previous run posted twice, which is the failure
 /// [`crate::bot::monitor`]'s per-sheep guard exists to prevent in the
 /// first place.
 ///
+/// # Why this pages, and what stops it paging forever
+///
+/// `wanted` is the flock the caller is about to draw, which it has to read
+/// anyway for the first refresh, and it is what makes paging terminate
+/// early in the ordinary case. Two conditions end the loop, and either one
+/// is enough:
+///
+/// - every sheep in `wanted` has been found, so nothing further back can
+///   matter; or
+/// - a page came back short of [`RECENT_MESSAGE_LIMIT`], meaning the
+///   channel has no more messages to give.
+///
+/// So a dedicated monitor channel costs about one request per hundred
+/// sheep, and a channel an operator also talks in costs at most as many
+/// requests as it takes to find the whole flock rather than reading the
+/// channel's whole history. An empty `wanted`, which is what a failed
+/// muster-roll read hands over, reads exactly one page: better than
+/// nothing, and no worse than the single fetch this used to do.
+///
+/// A message found for a sheep NOT in `wanted` is still adopted. It is an
+/// orphan from a sheep deleted while this dog was down, and adopting it is
+/// what lets the first refresh sweep it away, since a sheep it has a
+/// message for and the flock does not is exactly what
+/// [`crate::bot::monitor::Monitor::update_all`] deletes.
+///
 /// # Errors
-/// [`Error::Discord`] when Discord refuses to hand back the channel's
-/// recent messages.
-pub async fn rediscover<B: Board>(board: &B, me: UserId) -> Result<HashMap<u32, MessageId>, Error> {
+/// [`Error::Discord`] when Discord refuses to hand back a page.
+pub async fn rediscover<B: Board>(
+    board: &B,
+    me: UserId,
+    wanted: &[u32],
+) -> Result<HashMap<u32, MessageId>, Error> {
     let mut found: HashMap<u32, MessageId> = HashMap::new();
-    for message in board.recent().await? {
-        if message.author != me {
-            continue;
+    let mut before: Option<MessageId> = None;
+
+    loop {
+        let page = board.recent(before).await?;
+        let full_page = page.len() >= usize::from(RECENT_MESSAGE_LIMIT);
+        let oldest = page.last().map(|message| message.id);
+
+        for message in page {
+            if message.author != me {
+                continue;
+            }
+            if let Some(sheep) = sheep_id_of(&message) {
+                found.entry(sheep).or_insert(message.id);
+            }
         }
-        if let Some(sheep) = sheep_id_of(&message) {
-            found.entry(sheep).or_insert(message.id);
+
+        let all_found = wanted.iter().all(|sheep| found.contains_key(sheep));
+        let Some(oldest) = oldest else {
+            return Ok(found);
+        };
+        if all_found || !full_page {
+            return Ok(found);
         }
+        before = Some(oldest);
     }
-    Ok(found)
 }
 
 /// The one [`Board`] that reaches Discord.
@@ -219,11 +274,12 @@ impl Board for Live {
         Ok(())
     }
 
-    async fn recent(&self) -> Result<Vec<Posted>, Error> {
-        let messages = self
-            .channel
-            .messages(&self.http, GetMessages::new().limit(RECENT_MESSAGE_LIMIT))
-            .await?;
+    async fn recent(&self, before: Option<MessageId>) -> Result<Vec<Posted>, Error> {
+        let mut query = GetMessages::new().limit(RECENT_MESSAGE_LIMIT);
+        if let Some(before) = before {
+            query = query.before(before);
+        }
+        let messages = self.channel.messages(&self.http, query).await?;
         Ok(messages
             .into_iter()
             .map(|message| Posted {
@@ -260,13 +316,30 @@ mod tests {
 
     use super::*;
 
+    /// A channel holding one message per sheep for `count` sheep, newest
+    /// first the way Discord answers, so sheep `count` is the newest and
+    /// sheep 1 the oldest.
+    fn channel_of(count: u32) -> CountingChannel {
+        let board = CountingChannel::new();
+        board.preload(
+            (1..=count)
+                .rev()
+                .map(|sheep| message_from(u64::from(sheep), ME, &[format!("restart:{sheep}")]))
+                .collect(),
+        );
+        board
+    }
+
     /// One past message, written by `author`, carrying `custom_ids` on its
     /// buttons.
-    fn message_from(id: u64, author: u64, custom_ids: &[&str]) -> Posted {
+    fn message_from(id: u64, author: u64, custom_ids: &[impl AsRef<str>]) -> Posted {
         Posted {
             id: MessageId::new(id),
             author: UserId::new(author),
-            custom_ids: custom_ids.iter().map(|raw| (*raw).to_owned()).collect(),
+            custom_ids: custom_ids
+                .iter()
+                .map(|raw| raw.as_ref().to_owned())
+                .collect(),
         }
     }
 
@@ -297,6 +370,59 @@ mod tests {
         );
     }
 
+    /// A flock larger than one page must still be adopted whole. One
+    /// unpaginated fetch left every sheep past the hundredth unadopted,
+    /// and each of those got a second message posted that nothing would
+    /// ever clean up: one orphan per sheep per restart, permanently,
+    /// because unlike the bulk delete this replaces there is no later
+    /// sweep to catch it.
+    #[tokio::test]
+    async fn a_flock_spanning_more_than_one_page_is_adopted_whole() {
+        let sheep = u32::from(RECENT_MESSAGE_LIMIT) + 50;
+        let board = channel_of(sheep);
+        let wanted: Vec<u32> = (1..=sheep).collect();
+
+        let found = rediscover(&board, UserId::new(ME), &wanted)
+            .await
+            .expect("ok");
+
+        assert_eq!(found.len() as u32, sheep, "every sheep is adopted");
+        assert_eq!(found[&1], MessageId::new(1), "the oldest page included");
+        assert_eq!(board.pages(), 2, "150 sheep is two pages of 100");
+    }
+
+    /// Paging stops as soon as the flock is accounted for, so a channel an
+    /// operator also talks in is not read back to its beginning.
+    #[tokio::test]
+    async fn paging_stops_once_every_sheep_in_the_flock_is_found() {
+        let board = channel_of(u32::from(RECENT_MESSAGE_LIMIT) + 50);
+
+        let found = rediscover(&board, UserId::new(ME), &[150, 149])
+            .await
+            .expect("ok");
+
+        assert_eq!(board.pages(), 1, "both sheep are on the newest page");
+        assert_eq!(
+            found.len(),
+            usize::from(RECENT_MESSAGE_LIMIT),
+            "the page it did read is adopted whole, orphans included, so the first refresh can \
+             sweep the sheep that are no longer in the flock"
+        );
+    }
+
+    /// A failed muster-roll read leaves the caller with no flock to aim
+    /// at. One page is still better than nothing, and is what this used to
+    /// do unconditionally.
+    #[tokio::test]
+    async fn an_unknown_flock_reads_one_page_rather_than_the_whole_channel() {
+        let board = channel_of(u32::from(RECENT_MESSAGE_LIMIT) + 50);
+
+        let found = rediscover(&board, UserId::new(ME), &[]).await.expect("ok");
+
+        assert_eq!(board.pages(), 1);
+        assert_eq!(found.len(), usize::from(RECENT_MESSAGE_LIMIT));
+    }
+
     /// The old scheme put the sheep's NAME in the id (`process.ts:127`).
     /// A message an older version of this dog wrote must not be adopted
     /// under a sheep id it never carried.
@@ -314,7 +440,7 @@ mod tests {
             message_from(12, ME, &["hello"]),
         ]);
 
-        let found = rediscover(&board, UserId::new(ME)).await.expect("ok");
+        let found = rediscover(&board, UserId::new(ME), &[1]).await.expect("ok");
 
         assert_eq!(
             found,
@@ -334,7 +460,7 @@ mod tests {
             message_from(19, ME, &["restart:1"]),
         ]);
 
-        let found = rediscover(&board, UserId::new(ME)).await.expect("ok");
+        let found = rediscover(&board, UserId::new(ME), &[1]).await.expect("ok");
 
         assert_eq!(found, HashMap::from([(1, MessageId::new(20))]));
     }
