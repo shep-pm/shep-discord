@@ -125,6 +125,29 @@ fn cannot_start_runtime_message(err: &std::io::Error) -> String {
     format!("shep-discord: cannot start a runtime: {err}")
 }
 
+/// The message printed when the gateway task this loop spawned has ended
+/// on its own, distinguishing a panic from an ordinary return.
+///
+/// A pure function of the spawned task's own `JoinHandle` result, the same
+/// reason every other message here is a function rather than an inline
+/// `eprintln!`: it lets a test drive both branches with a real, spawned
+/// task and no gateway behind either.
+fn gateway_ended_message(outcome: &Result<(), tokio::task::JoinError>) -> String {
+    match outcome {
+        Ok(()) => "shep-discord: the gateway task ended on its own; starting a fresh one on the \
+                    next cycle."
+            .to_owned(),
+        Err(err) if err.is_panic() => format!(
+            "shep-discord: the gateway task panicked: {err}. Starting a fresh one on the next \
+             cycle rather than leaving Discord silently unanswered for the rest of this process."
+        ),
+        Err(err) => format!(
+            "shep-discord: the gateway task was cancelled: {err}. Starting a fresh one on the \
+             next cycle."
+        ),
+    }
+}
+
 /// The two names this dog needs, and the two different places they come
 /// from.
 ///
@@ -282,12 +305,15 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // loop is the only caller of, and a static hides that state from every
     // test that would otherwise exercise it. See `session::warn_once`.
     let mut unresolved_warned = false;
-    // `Some` once the gateway has been started; see the doc above for why
-    // it starts once rather than on every cycle. Holding the handle at all,
-    // rather than discarding it, is only so a future change has somewhere
-    // to join it; this loop does not await it today, on the same
-    // "do not sit through work already underway" reasoning `main`'s own
-    // `runtime.shutdown_background()` already carries.
+    // `Some` while the gateway task is running; see the doc above for why
+    // it starts once rather than on every cycle. Cleared back to `None`
+    // the cycle after the task finishes, panic or not, so a gateway that
+    // panicked does not leave this dog half dead: Discord silently
+    // unanswered while the socket connection to the shepherd, and this
+    // loop's own reads of `dogs.toml`, keep running as if nothing had
+    // happened. Before the check below existed, `is_none()` was the only
+    // read of this field, so a `Some` set once and never cleared stayed
+    // `Some` whether the task behind it was alive or long since dead.
     let mut gateway: Option<tokio::task::JoinHandle<()>> = None;
 
     if identity.handshake.is_none() {
@@ -304,6 +330,16 @@ async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     }
 
     loop {
+        // Checked every cycle, before anything else: a finished handle
+        // means the task behind it is gone, panic or ordinary return
+        // alike, and `gateway.is_none()` further down is the only thing
+        // that ever starts a new one. Left `Some`, this dog would answer
+        // Discord never again for the rest of the process while looking
+        // otherwise alive.
+        if let Some(handle) = gateway.take_if(|handle| handle.is_finished()) {
+            eprintln!("{}", gateway_ended_message(&handle.await));
+        }
+
         if session.is_none() {
             match connect(socket, identity).await {
                 Ok(live) => session = Some(Arc::new(live)),
@@ -466,6 +502,7 @@ mod tests {
         assert_no_dashes(&cannot_start_runtime_message(&std::io::Error::other(
             "no more file descriptors",
         )));
+        assert_no_dashes(&gateway_ended_message(&Ok(())));
     }
 
     /// An environment holding exactly one variable, which is the only one
@@ -487,5 +524,24 @@ mod tests {
         let identity = Identity::from_env(|_| None);
         assert_eq!(identity.handshake, None);
         assert_eq!(identity.section, DEFAULT_NAME);
+    }
+
+    /// A panicked gateway task is told apart from one that simply
+    /// returned, so an operator reading stderr knows whether Discord's own
+    /// gateway dropped a shard or this dog's own code panicked. Uses a
+    /// real spawned task rather than a hand-built `JoinError`: nothing in
+    /// `tokio::task` constructs one directly, and spawning one is not the
+    /// network call, gateway, or process this project's tests are barred
+    /// from starting.
+    #[tokio::test]
+    async fn a_panicked_gateway_is_told_apart_from_an_ordinary_return() {
+        let panicked = tokio::spawn(async { panic!("a gateway task panicking") }).await;
+        assert!(panicked.is_err());
+        let message = gateway_ended_message(&panicked);
+        assert!(message.contains("panicked"), "{message}");
+
+        let ended: Result<(), tokio::task::JoinError> = tokio::spawn(async {}).await;
+        let message = gateway_ended_message(&ended);
+        assert!(!message.contains("panicked"), "{message}");
     }
 }
