@@ -160,8 +160,11 @@ impl MonitorCommand {
             return no_channel_message().to_owned();
         };
         let interval = interval_for(state.config.monitor_interval);
-        let board = Refresh::new(&state.config, channel, interval, &state.live);
-        if refresh::start(&state.monitor, board) {
+        let board = channel::Live::new(&state.config.token, channel);
+        if refresh::start(
+            &state.monitor,
+            Refresh::new(board, &state.config, interval, &state.live),
+        ) {
             started_reply(&interval.to_string())
         } else {
             already_running_message().to_owned()
