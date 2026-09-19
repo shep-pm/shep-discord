@@ -321,21 +321,32 @@ impl Handler {
             }
             return;
         }
-        // A well formed custom_id, but no command in this task's registry
-        // draws a button: `/system` never does, and `/shep` (Task 12) is
-        // the first one that will. Every command gets a chance at it
-        // rather than a name encoded on the id, because `custom_id`
-        // carries only a verb and a sheep id, never which command drew
-        // the button. The interaction was already deferred ephemerally
-        // above, so a `Command::button` failure that only went to stderr
-        // left the user watching a spinner until Discord gave up on it;
-        // routing it through `report_failure` closes that the same way
-        // `handle_command` already does.
-        for command in &self.commands {
-            let outcome = command.button(ctx, interaction, &self.state).await;
-            for line in report_failure(command.name(), outcome, &responder).await {
+        // A well formed custom_id, answered by the one command that drew
+        // it. `/monitor` is the only one: it posts a row of verb buttons
+        // under every sheep in the monitor channel, and `/shep` and
+        // `/system` draw none. Asking `handles_button` first, rather than
+        // offering the click to every command in turn, is what keeps one
+        // click to one answer and one failure report; see
+        // `Command::handles_button`.
+        let Some(command) = self
+            .commands
+            .iter()
+            .find(|command| command.handles_button(&interaction.data.custom_id))
+        else {
+            // Parsed, but nothing claims it. Unreachable while `/monitor`
+            // claims every id `parse_custom_id` accepts, and answered
+            // rather than left silent anyway, because the alternative is
+            // the spinner this whole path exists to avoid.
+            if let Some(line) =
+                tell_or_log("an unclaimed button", unknown_component_reply(), &responder).await
+            {
                 eprintln!("{line}");
             }
+            return;
+        };
+        let outcome = command.button(ctx, interaction, &self.state).await;
+        for line in report_failure(command.name(), outcome, &responder).await {
+            eprintln!("{line}");
         }
     }
 }

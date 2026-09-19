@@ -105,10 +105,29 @@ pub trait Command: Send + Sync {
         Box::pin(async {})
     }
 
+    /// Whether this command is the one that drew the button `custom_id`
+    /// identifies.
+    ///
+    /// `false` by default, because most commands draw none. The dispatch
+    /// in [`crate::bot::interaction::Handler`] asks this before calling
+    /// [`Self::button`], so exactly one command answers a click and
+    /// exactly one failure can be reported for it. Calling every
+    /// command's `button` instead was harmless only while none of them
+    /// did anything: with a real handler, a success in one command and a
+    /// no-op in another can report an error for an action that worked.
+    ///
+    /// A predicate on the id rather than a name encoded in it:
+    /// [`crate::bot::embed::custom_id`] spends its hundred characters on a
+    /// verb and a sheep id and has no room to name a command as well.
+    fn handles_button(&self, _custom_id: &str) -> bool {
+        false
+    }
+
     /// Answer a button this command's own embed put in front of a user.
     ///
     /// A no-op by default, on [`Self::autocomplete`]'s own reasoning: only
-    /// a command that draws buttons needs to override it.
+    /// a command that draws buttons needs to override it. Reached only
+    /// when [`Self::handles_button`] said yes.
     ///
     /// # Errors
     /// Whatever answering the button could not do.
