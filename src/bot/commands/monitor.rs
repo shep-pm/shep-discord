@@ -438,6 +438,30 @@ mod tests {
         );
     }
 
+    /// The four replies that had only a dash check, asserted whole.
+    ///
+    /// Their neighbours above are pinned word for word, and these four
+    /// were not, which is the same gap that once let a mangled string
+    /// ship: a dash check passes on any wording at all, including a
+    /// sentence a bad edit has cut in half. Every one of them is a fixed
+    /// string with nothing interpolated, so there is no reason to assert
+    /// anything less than the whole of it.
+    #[test]
+    fn the_four_fixed_replies_say_exactly_what_they_should() {
+        assert_eq!(already_running_message(), "The monitor is already running.");
+        assert_eq!(
+            stopped_message(),
+            "The monitor is off. The messages already in the channel stay as they are, and the \
+             next start picks them up again rather than posting a second set."
+        );
+        assert_eq!(not_running_message(), "The monitor is not running.");
+        assert_eq!(
+            no_channel_message(),
+            "No monitor_channel is set in the [discord] section of dogs.toml, so there is \
+             nowhere to draw the monitor."
+        );
+    }
+
     /// A click on Restart under a sheep's embed reaches the shepherd as
     /// `SelectorSpec::Id`, and the operator gets the sentence the shepherd
     /// answered with. Before this handler existed the click deferred,

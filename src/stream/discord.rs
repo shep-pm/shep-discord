@@ -99,13 +99,14 @@ impl Sink for DiscordSink {
 mod tests {
     use super::DiscordSink;
 
-    /// `send` itself needs a socket, so this crate's tests cannot exercise
-    /// it; this is the one thing about `DiscordSink` a test can still
-    /// prove, per this module's own doc: `Http::new` makes no network call
-    /// of its own, so building a sink cannot fail or block before the
-    /// first `send`.
+    /// `send` itself needs a socket, so this crate's tests cannot
+    /// exercise it, and nothing here observes whether a network call
+    /// happened. What this proves is the whole of what it is named for:
+    /// construction returns. That it reaches no network is this module's
+    /// own documented argument from serenity's source, not something this
+    /// test could witness, and the old name claimed otherwise.
     #[test]
-    fn a_sink_builds_without_reaching_the_network() {
+    fn building_a_sink_does_not_panic() {
         let _sink = DiscordSink::new("fake-token");
     }
 

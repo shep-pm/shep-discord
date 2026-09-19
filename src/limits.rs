@@ -222,4 +222,17 @@ mod tests {
     fn a_zero_limit_returns_empty_rather_than_one_character_over() {
         assert_eq!(fit("hello", 0), "");
     }
+
+    /// The other end of the same edge. A limit of 1 leaves room for the
+    /// ellipsis and nothing else, so the answer is the ellipsis alone:
+    /// `take(limit - 1)` takes nothing and the ellipsis is one character.
+    /// The code is plain enough to read off, which is exactly why nobody
+    /// had pinned it, and an off-by-one here returns two characters for a
+    /// one-character budget, which Discord refuses.
+    #[test]
+    fn a_limit_of_one_is_the_ellipsis_and_nothing_else() {
+        let fitted = fit("hello", 1);
+        assert_eq!(fitted, "\u{2026}");
+        assert_eq!(fitted.chars().count(), 1);
+    }
 }

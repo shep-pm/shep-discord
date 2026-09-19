@@ -380,15 +380,23 @@ mod tests {
         assert_eq!(parse_custom_id("explode:1"), None);
     }
 
-    /// An action row holds at most 5 buttons. The row is exactly at the
-    /// ceiling, so a sixth verb needs a second row rather than a silent
-    /// 400.
+    /// An action row holds at most 5 buttons and this one carries exactly
+    /// 5, so a sixth verb needs a second row rather than a silent 400.
+    ///
+    /// `assert_eq!` rather than the `<= 5` this used to be, which the
+    /// doc above already contradicted. Four buttons passed it, zero
+    /// passed it, and a `SelectMenu` replacing the row passed it too,
+    /// since `button_count` answers 0 for a row that holds no buttons.
+    /// These are the only buttons this dog draws, so that assertion was
+    /// the one thing standing between the monitor's whole control strip
+    /// and silent removal.
     #[test]
-    fn the_button_row_is_within_what_an_action_row_holds() {
+    fn the_button_row_holds_exactly_what_an_action_row_allows() {
         let row = process_buttons(&info(1, "web"));
-        assert!(
-            button_count(&row) <= 5,
-            "an action row holds at most 5 buttons"
+        assert_eq!(
+            button_count(&row),
+            5,
+            "an action row holds at most 5 buttons and this row draws all 5"
         );
     }
 
