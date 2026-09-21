@@ -26,9 +26,9 @@ pub struct Section {
     #[shep(secret)]
     #[schemars(description = "Discord bot token.")]
     // Never read through this field for logging: the hand-written `Debug`
-    // below prints `Redacted` in its place regardless of whether a token is
-    // set. `Config::from_toml` is the one reader that legitimately reaches
-    // it, to move it into `Config::token`.
+    // below prints `<redacted>` in its place regardless of whether a token
+    // is set. `Config::from_toml` is the one reader that legitimately
+    // reaches it, to move it into `Config::token`.
     pub token: Option<String>,
     #[schemars(description = "The guild (server) this bot serves.")]
     pub guild_id: Option<u64>,
