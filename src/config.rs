@@ -158,69 +158,63 @@ fn parse_duration(value: String, field: &'static str) -> Result<UpDuration, Erro
     })
 }
 
-/// Turn a TOML parse failure into an [`Error`] without quoting the file
-/// back.
+/// Turn a TOML parse failure into an [`Error`] carrying the line number
+/// and nothing else.
 ///
-/// `toml::de::Error`'s own `Display` renders the offending source line
-/// under a caret, which is excellent for a compiler and wrong for this
-/// file: the line it quotes is very often `token = "..."`, so the error
-/// carries the bot token in clear text into stderr, into
-/// `$SHEP_HOME/logs/<name>-0-err.log` through the shepherd's log pump,
-/// and out again through `shep bleats`. Everything else here guards that
-/// value. `Section` and `Config` both have hand-written `Debug`
-/// implementations printing `<redacted>`, pinned by an exact-string
-/// test, and the module doc explains that the token never travels
-/// through the environment for the same reason. A parse error walked
-/// past all of it.
+/// The line number is the whole of it on purpose. It is an integer
+/// counted from a byte offset, so it cannot carry a secret, and every
+/// other part of what `toml` produces can.
 ///
-/// shep hit this in its own dog framework and says so. In
-/// `shep-cli/src/dog/mod.rs`, `DogRunError::Section`'s `message` field is
-/// documented as "the parser's full complaint, which can quote the
-/// offending line", the enum's `Debug` is hand-written to redact it
-/// because it "can quote a `[dog.<name>]` webhook URL verbatim", and
-/// `run_bark` discards the error entirely: "The fact, not the value: a
-/// `[bark]` section can carry a webhook URL with a bearer token in its
-/// path."
+/// `toml::de::Error`'s `Display` renders the offending source line under
+/// a caret, and that line is very often `token = "..."`. Its
+/// `message()` is no safer: `invalid type: string "MTIz.SECRET.abc",
+/// expected u64` is what an operator gets for pasting a bot token onto
+/// `guild_id`, and every field in [`Section`] except `token` itself is a
+/// `u64`, `usize` or `bool`, so all of them quote a pasted string back.
+/// `invalid type: integer `9912345678`, expected a string` is the same
+/// thing for a token written unquoted.
 ///
-/// bark goes further than this does. It prints one fixed sentence and no
-/// detail at all, not even a line number. This keeps the line number,
-/// which is an integer counted from a byte offset and cannot carry a
-/// secret, and keeps `message()` for a line that does not assign
-/// `token`, because "unknown field `buffer_line`" is the whole diagnosis
-/// for the commonest mistake in this file and a key name is not a
-/// secret. The narrower rule is worth the reasoning it costs; bark's
-/// absolute one would be right too.
+/// From there it goes to stderr, to `$SHEP_HOME/logs/<name>-0-err.log`
+/// through the shepherd's log pump, and back out through `shep bleats`.
+/// Everything else in this module guards that value: `Section` and
+/// `Config` have hand-written `Debug` implementations printing
+/// `<redacted>`, pinned by an exact-string test, and the module doc
+/// explains that the token never travels through the environment for the
+/// same reason.
 ///
-/// So the fact. The line number, which no secret lives in, and
-/// `err.message()`, which is what was expected rather than what was
-/// found. Two things it deliberately does not do:
+/// This landed on the line number only after two narrower rules, and the
+/// way they failed is the argument. First the rendered source was
+/// dropped and `message()` kept, which `invalid type: integer` walked
+/// straight past. Then `message()` was dropped for a failing line that
+/// assigned `token`, which a token pasted onto `guild_id` walked past
+/// just as easily, because the line it sits on is not the token's line.
+/// Both were attempts to enumerate the messages that can quote a value,
+/// and that is not a set anybody enumerates correctly on the third try
+/// either.
 ///
-/// - It never renders `err` itself, which is where the quoted source
-///   line comes from.
-/// - It drops `message()` too when the failing line assigns `token`,
-///   because `message()` is not unconditionally value free: a token
-///   written unquoted fails as `invalid type: integer `9912345678`,
-///   expected a string`, with the value inside it. A real bot token
-///   cannot be a bare TOML scalar, so that case is an operator's typo
-///   rather than a working config, but a value that is a secret to
-///   somebody is not worth printing to find out.
+/// shep reached the same place in its own dog framework.
+/// `shep-cli/src/dog/mod.rs` documents `DogRunError::Section`'s
+/// `message` as "the parser's full complaint, which can quote the
+/// offending line", hand-writes a `Debug` that redacts it because it
+/// "can quote a `[dog.<name>]` webhook URL verbatim", and has `run_bark`
+/// discard the error outright: "The fact, not the value: a `[bark]`
+/// section can carry a webhook URL with a bearer token in its path."
+/// This says one thing more than bark does, which is which line.
+///
+/// What it costs is real and worth naming: `unknown field
+/// `buffer_line`` was the whole diagnosis for the commonest mistake in
+/// this file, and it is gone. An operator gets the line number, opens
+/// `dogs.toml` at it, and compares against `--print-config` or the
+/// README table. That is a worse error and a safe one, and a bearer
+/// credential is not the thing to spend on a better error message.
 fn parse_failure(text: &str, err: &toml::de::Error) -> Error {
     let offset = err.span().map_or(0, |span| span.start).min(text.len());
-    let head = &text[..offset];
-    let line_number = head.matches('\n').count() + 1;
-
-    let start = head.rfind('\n').map_or(0, |end| end + 1);
-    let line = text[start..]
-        .split_once('\n')
-        .map_or(&text[start..], |(line, _)| line);
-
-    if line.trim_start().starts_with("token") {
-        return Error::Config(format!(
-            "line {line_number} does not parse. This dog will not say what is on it, because \
-             that is the line the bot token is written on."
-        ));
-    }
-    Error::Config(format!("line {line_number}: {}", err.message()))
+    let line_number = text[..offset].matches('\n').count() + 1;
+    Error::Config(format!(
+        "line {line_number} does not parse. This dog will not print what is on it or what the \
+         parser made of it, because a mistyped section is exactly where a bot token ends up in \
+         the wrong place. Compare that line against shep-discord --print-config."
+    ))
 }
 
 /// Refuse a present `0`, naming `field` in the [`Error`].
@@ -418,10 +412,18 @@ mod tests {
     /// and the module doc says the token never travels through the
     /// environment. The parse error walked past all of it.
     ///
-    /// The second and third cases are not syntax errors at all. A token
-    /// written unquoted fails as `invalid type: integer `...``, with the
-    /// value inside `message()` rather than inside the quoted source, so
-    /// dropping the source alone does not cover it.
+    /// Three shapes, and the order they were found in is why
+    /// [`parse_failure`] ended up printing a line number and nothing
+    /// else.
+    ///
+    /// A syntax error quotes the source line, which is usually the
+    /// token's. A token written unquoted fails as `invalid type: integer
+    /// `...``, with the value inside `message()` rather than inside the
+    /// quoted source. And a token pasted onto the wrong key fails as
+    /// `invalid type: string "..."`, on a line that does not mention
+    /// `token` at all, so no rule that reads the line can see it. Every
+    /// field here except `token` is a `u64`, `usize` or `bool`, so the
+    /// last shape has a row for each of them.
     #[test]
     fn a_section_that_does_not_parse_never_says_what_is_on_the_token_line() {
         for (toml, secret) in [
@@ -434,6 +436,36 @@ mod tests {
             (
                 "guild_id = 1\ntoken = \"MTIz.ANOTHERSECRET.xyz\" oops\n",
                 "ANOTHERSECRET",
+            ),
+            // A token pasted onto the wrong key, which is the shape
+            // neither earlier rule caught: the value is a well formed
+            // string on a line that does not mention `token`, so
+            // nothing about the line gives it away. Every field in
+            // `Section` except `token` is a `u64`, `usize` or `bool`,
+            // so all of them quote a pasted string back the same way.
+            (
+                "token = \"t\"\nguild_id = \"MTIz.WRONGKEY.abc\"\n",
+                "WRONGKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nlog_channel = \"MTIz.CHANNELKEY.abc\"\n",
+                "CHANNELKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nmonitor_channel = \"MTIz.MONITORKEY.abc\"\n",
+                "MONITORKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nerr_channel = \"MTIz.ERRKEY.abc\"\n",
+                "ERRKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nbuffer_lines = \"MTIz.LINESKEY.abc\"\n",
+                "LINESKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nignore_dogs = \"MTIz.DOGSKEY.abc\"\n",
+                "DOGSKEY",
             ),
         ] {
             let err = Config::from_toml(toml).expect_err(toml).to_string();
@@ -549,12 +581,24 @@ mod tests {
         assert_eq!(config.err_channel, None);
     }
 
+    /// The refusal is the point, and `deny_unknown_fields` on [`Section`]
+    /// is what does it: a misspelled key that parsed and was ignored
+    /// would leave an operator watching a setting they wrote have no
+    /// effect, with nothing anywhere saying why.
+    ///
+    /// This used to assert the error named `buffer_line`, and
+    /// [`parse_failure`] no longer lets it. The key name is not itself a
+    /// secret, but the message that carries it is the same `message()`
+    /// that quotes a pasted bot token, and no rule told the two apart
+    /// across three attempts. The line number is what is left, so that
+    /// is what this asserts.
     #[test]
     fn a_misspelled_key_is_refused_rather_than_ignored() {
         let err = Config::from_toml("token = \"t\"\nguild_id = 1\nbuffer_line = 10\n")
             .expect_err("refused")
             .to_string();
-        assert!(err.contains("buffer_line"), "{err}");
+        assert!(err.contains("line 3"), "{err}");
+        assert!(!err.contains("buffer_line"), "{err}");
     }
 
     // `Config::from_toml("token = \"t\"\nguild_id = 1\n")` against four
