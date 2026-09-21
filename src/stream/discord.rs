@@ -452,9 +452,15 @@ mod tests {
         }
     }
 
-    /// A derived `Debug` on a type holding a bot token, even indirectly
-    /// through `Http`, puts that token into every log line, panic message
-    /// and error chain that prints it. An exact string, not a `contains`:
+    /// `DiscordSink`'s `Debug` is hand-written, and this is what pins it.
+    /// A later `#[derive(Debug)]` here would print whatever the transport's
+    /// own `Debug` prints, which is not this crate's call to make. Today
+    /// that transport is serenity's `Http`, which holds the token in a
+    /// `secrecy::SecretString` that redacts itself, so a derive would not
+    /// spill it. That is a dependency's behaviour no test here versions,
+    /// and it covers one `R`: `DiscordSink` is generic, so a transport
+    /// added later carries no such guarantee and a fake in these tests
+    /// holds its token in plain sight. An exact string, not a `contains`:
     /// a redaction that stops covering a newly added field still passes a
     /// `contains` check.
     #[test]
