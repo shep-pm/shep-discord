@@ -91,6 +91,22 @@ guild_id = 123456789012345678
 `/monitor start` starts it for the running process only, on that same
 interval, and never writes to `dogs.toml`.
 
+### A section this dog will not accept
+
+A value it refuses stops the process. `buffer_lines = 0`, a snowflake of
+`0`, a duration shep's grammar will not parse, a key that is not in the
+table above, text that is not TOML: none of those clear on their own, so
+retrying is the same failure every 30 seconds while `shep dogs` reports the
+dog online throughout. It prints the fault and exits instead. The shepherd
+restarts it until the budget runs out and it lands `Errored`, where you can
+see it. Fix the value, then `shep restart <name>`.
+
+A section nobody has filled in is different, and stops nothing. A dog you
+have just adopted has no `token` yet, since `shep adopt` vets, registers,
+enables and starts in one command, so exiting for that would make this dog
+impossible to adopt at all. It stays up, names the section it read and the
+key that is missing, and says so again every hour until you fill it in.
+
 ## Commands
 
 All three carry the administrator permission gate.
