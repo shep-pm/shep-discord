@@ -150,11 +150,9 @@ pub const MIN_MONITOR_INTERVAL_MS: u64 = 15_000;
 /// Parse `value` into an [`UpDuration`], naming `field` in the [`Error`] so
 /// an operator can find the offending key without reading this dog's
 /// source.
-fn parse_duration(value: String, field: &'static str) -> Result<UpDuration, Error> {
+fn parse_duration(value: &str, field: &'static str) -> Result<UpDuration, Error> {
     value.parse::<UpDuration>().map_err(|source| {
-        Error::Config(format!(
-            "{field} = \"{value}\" is not a duration shep accepts: {source}"
-        ))
+        Error::Config(format!("{field} is not a duration shep accepts: {source}"))
     })
 }
 
@@ -300,12 +298,12 @@ impl Config {
 
         let flush = section
             .flush
-            .map(|value| parse_duration(value, "flush"))
+            .map(|value| parse_duration(&value, "flush"))
             .transpose()?
             .unwrap_or(UpDuration::from_millis(DEFAULT_FLUSH_MS));
         let coalesce = section
             .coalesce
-            .map(|value| parse_duration(value, "coalesce"))
+            .map(|value| parse_duration(&value, "coalesce"))
             .transpose()?
             .unwrap_or(UpDuration::from_millis(DEFAULT_COALESCE_MS));
         // Raised to the floor rather than refused: an operator who wrote
@@ -313,7 +311,7 @@ impl Config {
         let floor = UpDuration::from_millis(MIN_MONITOR_INTERVAL_MS);
         let monitor_interval = section
             .monitor_interval
-            .map(|value| parse_duration(value, "monitor_interval"))
+            .map(|value| parse_duration(&value, "monitor_interval"))
             .transpose()?
             .map(|interval| interval.max(floor));
 
@@ -440,9 +438,11 @@ mod tests {
     /// `...``, with the value inside `message()` rather than inside the
     /// quoted source. And a token pasted onto the wrong key fails as
     /// `invalid type: string "..."`, on a line that does not mention
-    /// `token` at all, so no rule that reads the line can see it. Every
-    /// field here except `token` is a `u64`, `usize` or `bool`, so the
-    /// last shape has a row for each of them.
+    /// `token` at all, so no rule that reads the line can see it. There
+    /// is a row for every other field in `Section`, because the shape
+    /// holds whatever the field's type is: the integer and bool ones
+    /// quote the string back through `toml`, and the three duration ones
+    /// parse as TOML and are refused a step later by `parse_duration`.
     #[test]
     fn a_section_that_does_not_parse_never_says_what_is_on_the_token_line() {
         for (toml, secret) in [
@@ -485,6 +485,22 @@ mod tests {
             (
                 "token = \"t\"\nguild_id = 1\nignore_dogs = \"MTIz.DOGSKEY.abc\"\n",
                 "DOGSKEY",
+            ),
+            // The three duration fields are `String` in `Section`, so a
+            // pasted token parses as TOML and is refused by
+            // `parse_duration` instead. That is a different code path to
+            // every row above and it reaches the same operator log.
+            (
+                "token = \"t\"\nguild_id = 1\nflush = \"MTIz.FLUSHKEY.abc\"\n",
+                "FLUSHKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\ncoalesce = \"MTIz.COALESCEKEY.abc\"\n",
+                "COALESCEKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nmonitor_interval = \"MTIz.INTERVALKEY.abc\"\n",
+                "INTERVALKEY",
             ),
         ] {
             let err = Config::from_toml(toml).expect_err(toml).to_string();
