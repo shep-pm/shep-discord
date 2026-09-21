@@ -185,6 +185,31 @@ async fn connect(socket: &Path, identity: &Identity) -> Result<Live, Error> {
     Ok(Live::new(client))
 }
 
+/// The exit code a refused handshake ends this process on.
+///
+/// shep's own number for the cause: `protocol_mismatch`, `6`, and the code
+/// shep's `docs/dogs.md` says a dog refused on protocol-version skew exits
+/// on. Written out here rather than imported, because there is nothing to
+/// import: the taxonomy lives in `shep-cli`, which is a binary rather than
+/// a library, and `shep-client` exports no part of it. The number is the
+/// contract, so `tests/refused_handshake.rs` spells the same `6` out and
+/// reads it back off a real process.
+///
+/// Nothing branches on it. `decide_on_exit` in the shepherd tests an exit
+/// code against `stop_exit_codes`, empty unless an operator wrote one, and
+/// restarts regardless of the value otherwise. What it buys is an operator
+/// reading the `EXIT` column and learning why this dog stopped, where the
+/// `1` it used to print said only that something had.
+///
+/// The two codes beside it stay unclaimed, because neither cause exists
+/// here. `5` is a dog that gave up waiting for a shepherd to answer again,
+/// and this one never gives up: `stream::wait_for_successor` hands the
+/// retry back to this loop rather than ending the process. `13` is a
+/// request the shepherd refused, and nothing here exits on one, since a
+/// `/system` against a shepherd too old for `HostUsage` answers that one
+/// command with an error and leaves the rest of the dog running.
+const PROTOCOL_MISMATCH: u8 = 6;
+
 /// The message printed when the shepherd refuses this dog's handshake.
 ///
 /// A function rather than an inline `eprintln!` so the dash check can reach
@@ -209,9 +234,13 @@ fn refused_message(daemon_version: Option<&str>, message: &str) -> String {
 /// a dog from its recorded path, and a skew usually means the binary at
 /// that path has already been replaced by the one that matches, so the
 /// restart is the fix rather than a retry of the same mistake.
+///
+/// The code is [`PROTOCOL_MISMATCH`], which is shep's own number for this
+/// cause rather than a bare failure; see the constant for what that is
+/// worth and to whom.
 fn refused(daemon_version: Option<&str>, message: &str) -> ExitCode {
     eprintln!("{}", refused_message(daemon_version, message));
-    ExitCode::FAILURE
+    ExitCode::from(PROTOCOL_MISMATCH)
 }
 
 /// How often the run loop rechecks [`Live::link`] and rereads its own
