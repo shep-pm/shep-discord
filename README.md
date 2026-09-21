@@ -99,7 +99,8 @@ table above, text that is not TOML: none of those clear on their own, so
 retrying is the same failure every 30 seconds while `shep dogs` reports the
 dog online throughout. It prints the fault and exits instead. The shepherd
 restarts it until the budget runs out and it lands `Errored`, where you can
-see it. Fix the value, then `shep restart <name>`.
+see it. The `EXIT` column reads `4`, which is shep's own `invalid_config`.
+Fix the value, then `shep restart <name>`.
 
 A section nobody has filled in is different, and stops nothing. A dog you
 have just adopted has no `token` yet, since `shep adopt` vets, registers,

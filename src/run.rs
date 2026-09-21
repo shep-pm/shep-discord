@@ -250,6 +250,29 @@ fn refused(daemon_version: Option<&str>, message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// The exit code a refused `dogs.toml` ends this process on.
+///
+/// shep's own number for the cause: `invalid_config`, `4`, which
+/// `shep-cli`'s `ExitCode` enum documents as "a Flockfile or daemon
+/// config failed validation" and the daemon answers as an `RpcErrorCode`
+/// for a dog field it will not take. A section this dog will not take is
+/// the same cause seen from the other end of the same wire.
+///
+/// Read rather than written, which is the whole test. shep assigns `0`
+/// through `13` and nothing above, and `12` and `13` are its own
+/// `VersionSkew` and `Unsupported` rather than a range held open for
+/// dogs: no part of that taxonomy is reserved for a dog to fill in. So
+/// the choice here was never between a documented code and a new one of
+/// this crate's own. It was between shep's specific number for this
+/// cause and its generic `Failure`, `1`, and a bare `1` in the `EXIT`
+/// column tells an operator only that something stopped the dog.
+///
+/// Written out rather than imported, for the reason `PROTOCOL_MISMATCH`
+/// is in shep-pm/shep-discord#4: the taxonomy lives in `shep-cli`, a
+/// binary crate with nothing to import from, so the number itself is the
+/// contract.
+const INVALID_CONFIG: u8 = 4;
+
 /// The message printed when this dog is stopping because its own section
 /// names a value it will not accept.
 ///
@@ -299,20 +322,7 @@ fn misconfigured_message(section: &str, err: &Error) -> String {
 fn on_config_failure(section: &str, err: &Error, last: &mut Option<Complaint>) -> Option<ExitCode> {
     if matches!(err, Error::Config(_)) {
         eprintln!("{}", misconfigured_message(section, err));
-        // A bare failure, deliberately, because shep has no number for
-        // this cause. It documents three for a dog: `5` gave up waiting
-        // for a shepherd, `6` protocol skew, `13` a request the shepherd
-        // refused. Every one of them is about the shepherd, and this is
-        // a dog that cannot read its own file, so claiming one would say
-        // something untrue in the `EXIT` column rather than nothing.
-        //
-        // `12` upward is reserved for a dog's own codes, so a number for
-        // this could be defined. Not here: a code is a contract with
-        // whoever reads it, and writing a new one down unilaterally, in
-        // a change about config handling, is how a taxonomy drifts.
-        // `refused` above is the opposite case and rightly takes shep's
-        // own number, because shep had already assigned one.
-        return Some(ExitCode::FAILURE);
+        return Some(ExitCode::from(INVALID_CONFIG));
     }
 
     let message = config_failed_message(section, err);
