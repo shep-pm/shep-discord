@@ -4,8 +4,9 @@
 //! arguments; this module is about being one. [`run`] holds the socket
 //! open, rereads this dog's own `dogs.toml` section on a timer, spawns the
 //! gateway once, starts the monitor once, and hands the bus subscription
-//! to [`crate::session::stream_once`] for as long as it lasts. Nothing in
-//! here is fatal except a signal and a refused handshake. The Discord
+//! to [`crate::session::stream_once`] for as long as it lasts. Three
+//! things in here are fatal: a signal, a refused handshake, and a section
+//! of `dogs.toml` carrying a value this dog will not accept. The Discord
 //! clients all of that writes through are [`crate::wiring::Wiring`], built
 //! here on the first cycle that resolves a config.
 //!
@@ -83,30 +84,65 @@ fn config_failed_message(section: &str, err: &Error) -> String {
     format!("shep-discord: [{section}] in dogs.toml: {err}")
 }
 
+/// How many cycles a repeated complaint is muted for before it is said
+/// again.
+///
+/// Counted in cycles rather than in time so it tracks
+/// [`RECHECK_INTERVAL`] instead of drifting away from it; 120 of them is
+/// an hour at thirty seconds.
+///
+/// What matters is that it is not infinity, which is what it used to be.
+/// Muting a repeat forever is defensible for a complaint that would
+/// otherwise print 2,880 identical lines a day, and indefensible for the
+/// one thing this loop stays up for: a dog nobody has configured yet is
+/// deliberately left running, and a dog that said why once and then never
+/// again is indistinguishable from a working one by the time anybody
+/// looks. The shepherd reports it online, `shep bleats` shows nothing at
+/// all, and the line that explained it scrolled past hours ago.
+///
+/// Borrowed from shep-deploy's `RESAY`, which is the same number for the
+/// same reason.
+const RESAY: u32 = 120;
+
+/// The last complaint this loop printed, and how many cycles it has been
+/// muted for since.
+struct Complaint {
+    /// The line as it was printed.
+    line: String,
+    /// Cycles since it was last printed.
+    muted: u32,
+}
+
 /// Whether this cycle's config outcome is worth printing, threading the
 /// last complaint through `last` rather than a process-global, the same
 /// shape and for the same reason as `session::warn_once`.
 ///
 /// `None` is a cycle that read the config fine, and it clears the state,
 /// so a failure that comes back after a good read is announced again.
-/// `Some` prints only when the sentence differs from the last one
-/// printed: an operator who fixes one mistake in `dogs.toml` and makes a
-/// different one hears about the new one, while an unfixed mistake says
-/// its piece once instead of every [`RECHECK_INTERVAL`] for the life of
-/// the process. At thirty seconds that is 2,880 identical lines a day,
-/// which is how a real problem gets scrolled past.
-fn worth_saying(message: Option<&str>, last: &mut Option<String>) -> bool {
-    match message {
-        None => {
-            *last = None;
-            false
-        }
-        Some(message) if last.as_deref() == Some(message) => false,
-        Some(message) => {
-            *last = Some(message.to_owned());
-            true
+/// `Some` prints when the sentence differs from the last one printed, so
+/// an operator who fixes one mistake in `dogs.toml` and makes a different
+/// one hears about the new one; a repeat of the same sentence prints once
+/// more every [`RESAY`] cycles, and says nothing in between.
+fn worth_saying(message: Option<&str>, last: &mut Option<Complaint>) -> bool {
+    let Some(message) = message else {
+        *last = None;
+        return false;
+    };
+
+    if let Some(seen) = last.as_mut()
+        && seen.line == message
+    {
+        seen.muted += 1;
+        if seen.muted < RESAY {
+            return false;
         }
     }
+
+    *last = Some(Complaint {
+        line: message.to_owned(),
+        muted: 0,
+    });
+    true
 }
 
 /// The message printed when the gateway task this loop spawned has ended
@@ -243,6 +279,101 @@ fn refused(daemon_version: Option<&str>, message: &str) -> ExitCode {
     ExitCode::from(PROTOCOL_MISMATCH)
 }
 
+/// The exit code a refused `dogs.toml` ends this process on.
+///
+/// shep's own number for the cause, and its own dogs already exit on it
+/// for this exact thing. `shep-cli/src/dog/mod.rs` is the precedent:
+/// `exit_code_for` maps `DogRunError::Section { .. }`, which is a dog's
+/// `dogs.toml` section failing to parse into its config type, to
+/// `ExitCode::InvalidConfig`, and `run_bark` returns the same code
+/// directly when `[bark]` does not parse or its rule set is rejected.
+/// A built-in dog refusing its section exits `4`, so an adopted one
+/// refusing its section exits `4`.
+///
+/// That is the argument. `ExitCode`'s own doc comment calls `4` "a
+/// Flockfile or daemon config failed validation", which fits and is
+/// weaker support than the code doing it: a sentence has to be read
+/// across to this case, and `run_bark` is this case.
+///
+/// Read rather than written, which is the whole test. shep assigns `0`
+/// through `13` and nothing above, and `12` and `13` are its own
+/// `VersionSkew` and `Unsupported` rather than a range held open for
+/// dogs: no part of that taxonomy is reserved for a dog to fill in. So
+/// the choice here was never between a documented code and a new one of
+/// this crate's own. It was between shep's specific number for this
+/// cause and its generic `Failure`, `1`, and a bare `1` in the `EXIT`
+/// column tells an operator only that something stopped the dog.
+///
+/// Written out rather than imported, for the reason `PROTOCOL_MISMATCH`
+/// is in shep-pm/shep-discord#4: the taxonomy lives in `shep-cli`, a
+/// binary crate with nothing to import from, so the number itself is the
+/// contract.
+const INVALID_CONFIG: u8 = 4;
+
+/// The message printed when this dog is stopping because its own section
+/// names a value it will not accept.
+///
+/// A function rather than an inline `eprintln!` so the dash check can
+/// reach the text, the same reason [`refused_message`] is one. It says
+/// more than [`config_failed_message`] does on purpose: an operator
+/// reading it is about to watch this dog crash loop into `Errored`, and
+/// the sentence has to carry both why that is happening and what ends it.
+fn misconfigured_message(section: &str, err: &Error) -> String {
+    format!(
+        "shep-discord: [{section}] in dogs.toml: {err}. Nothing about that clears on \
+         its own, so every retry would be the same failure. Exiting rather than \
+         staying up: a dog that kept answering the shepherd's handshake while never \
+         answering Discord would be reported online on every column a listing has, \
+         and the only evidence would be this line. Fix the value and run \
+         shep restart {section}."
+    )
+}
+
+/// Say why this dog is stopping over a config, or say nothing much and
+/// let it carry on, and hand back the code to stop with when it is
+/// stopping.
+///
+/// This is the whole of the change that made a wrong config fatal, and
+/// the reason [`Error::Unconfigured`] exists beside [`Error::Config`].
+/// Three things reach this arm and only one of them is fatal:
+///
+/// - **A section carrying a value this dog refuses** ([`Error::Config`]):
+///   a `buffer_lines = 0`, a `guild_id = 0`, a duration shep's grammar
+///   will not parse, a key this dog does not know, text that is not TOML.
+///   Nothing changes until an operator edits the file, so staying up
+///   means an infinite run of identical failures with the dog reported
+///   online throughout, which is exactly the anti-pattern shep's own
+///   `/docs/writing-a-dog` names. It exits, the same argument
+///   [`refused`] makes for a refused handshake.
+/// - **A section nobody has filled in yet** ([`Error::Unconfigured`]): no
+///   `token`, no `guild_id`. This is every freshly adopted dog, because
+///   `shep adopt` vets, registers, enables and starts in one command, so
+///   exiting here would make this dog impossible to adopt at all. It
+///   stays up and says so on [`RESAY`]'s cadence.
+/// - **A shepherd that could not answer** ([`Error::Connect`],
+///   [`Error::Request`], [`Error::Unexpected`]): a daemon mid restart or
+///   mid handover. It clears on its own, so it stays up too.
+///
+/// The cost of the first one is self healing, and it is worth naming.
+/// Before this, a `dogs.toml` fixed after the fact was picked up on the
+/// next cycle, since this loop rereads its section every pass. Now a dog
+/// that exited needs `shep restart <name>` once the typo is fixed,
+/// because the crash loop will have spent its restart budget and left it
+/// `Errored`. That trade is deliberate: an honest status an operator can
+/// see beats a silent recovery they cannot.
+fn on_config_failure(section: &str, err: &Error, last: &mut Option<Complaint>) -> Option<ExitCode> {
+    if matches!(err, Error::Config(_)) {
+        eprintln!("{}", misconfigured_message(section, err));
+        return Some(ExitCode::from(INVALID_CONFIG));
+    }
+
+    let message = config_failed_message(section, err);
+    if worth_saying(Some(&message), last) {
+        eprintln!("{message}");
+    }
+    None
+}
+
 /// How often the run loop rechecks [`Live::link`] and rereads its own
 /// `dogs.toml` section.
 ///
@@ -258,11 +389,14 @@ pub const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// The run loop.
 ///
-/// Nothing in here is fatal except a signal and a refused handshake. A
-/// failed cycle is printed and retried on the next interval, because the
-/// shepherd restarting underneath a dog is ordinary rather than
+/// A failed cycle is printed and retried on the next interval, because
+/// the shepherd restarting underneath a dog is ordinary rather than
 /// exceptional, and exiting would ask the supervisor to restart this
-/// process for a condition that resolves itself on its own.
+/// process for a condition that resolves itself on its own. Three things
+/// are not that, and end the process instead: a signal, a refused
+/// handshake, and a `dogs.toml` section this dog will not accept. See
+/// [`on_config_failure`] for the last of them, which is the only one that
+/// has to tell two failures apart to get it right.
 ///
 /// There is no signal handling beyond `ctrl_c`, which is the clean-exit
 /// path for an operator running this binary in a terminal; see
@@ -332,8 +466,9 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // task through `bot::command::State`.
     let monitor = Arc::new(bot::monitor::Monitor::new());
     // The last config complaint printed, so an unfixed `dogs.toml` says
-    // its piece once rather than on every cycle. See `worth_saying`.
-    let mut last_config_complaint: Option<String> = None;
+    // its piece once an hour rather than on every cycle. See
+    // `worth_saying`.
+    let mut last_config_complaint: Option<Complaint> = None;
     // Whether the boot start below has already had its one turn: it gets
     // exactly one, and the comment at that call site has the why.
     let mut monitor_started = false;
@@ -482,9 +617,10 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                     }
                 }
                 Err(err) => {
-                    let message = config_failed_message(&identity.section, &err);
-                    if worth_saying(Some(&message), &mut last_config_complaint) {
-                        eprintln!("{message}");
+                    if let Some(code) =
+                        on_config_failure(&identity.section, &err, &mut last_config_complaint)
+                    {
+                        return code;
                     }
                 }
             }
@@ -513,8 +649,35 @@ mod tests {
         assert_no_dashes(&gateway_ended_message(&Ok(())));
         assert_no_dashes(&config_failed_message(
             "chatter",
-            &Error::Config("token is required".to_owned()),
+            &Error::Unconfigured("token is required".to_owned()),
         ));
+        assert_no_dashes(&misconfigured_message(
+            "chatter",
+            &Error::Config("buffer_lines must be at least 1".to_owned()),
+        ));
+    }
+
+    /// A run of spaces inside a message reads as a rendering fault to
+    /// whoever is already staring at an error. It is also what a `\`
+    /// continued string leaves behind when the continuation goes and the
+    /// indentation stays, which is how one got in.
+    #[test]
+    fn nothing_printed_for_a_person_carries_a_double_space() {
+        for message in [
+            unadopted_message(DEFAULT_NAME),
+            refused_message(Some("9"), "protocol too old"),
+            gateway_ended_message(&Ok(())),
+            config_failed_message(
+                "chatter",
+                &Error::Unconfigured("token is required".to_owned()),
+            ),
+            misconfigured_message(
+                "chatter",
+                &Error::Config("buffer_lines must be at least 1".to_owned()),
+            ),
+        ] {
+            assert!(!message.contains("  "), "two spaces in a row: {message:?}");
+        }
     }
 
     /// The name of the section is the diagnosis for the likeliest first
@@ -553,6 +716,109 @@ mod tests {
             worth_saying(Some("guild_id is required"), &mut last),
             "and a problem coming back after a good read is announced again"
         );
+    }
+
+    /// The other half of the same function, and the reason it holds state
+    /// at all rather than printing every cycle. A dog nobody has
+    /// configured is left running on purpose, so its one explanation
+    /// cannot be a line said once and never again: an hour later the
+    /// shepherd still reports it online and there is nothing in the log
+    /// to say why.
+    ///
+    /// Counted a cycle at a time rather than asserted at the boundary
+    /// alone, so the silence in between is pinned as well as the line at
+    /// the end of it.
+    #[test]
+    fn an_unconfigured_dog_says_so_again_rather_than_only_once() {
+        let mut last = None;
+        let complaint = "shep-discord: [discord] in dogs.toml: token is required";
+        assert!(worth_saying(Some(complaint), &mut last), "the first cycle");
+        for cycle in 1..RESAY {
+            assert!(
+                !worth_saying(Some(complaint), &mut last),
+                "cycle {cycle} of {RESAY} is inside the muted window"
+            );
+        }
+        assert!(
+            worth_saying(Some(complaint), &mut last),
+            "and the cycle after the window says it again"
+        );
+        assert!(
+            !worth_saying(Some(complaint), &mut last),
+            "then goes quiet for another window rather than repeating forever"
+        );
+    }
+
+    /// The behavioural half, and the whole point of the change. Both
+    /// halves have to be here: a version that exited on everything would
+    /// pass the first loop and make this dog impossible to adopt, and a
+    /// version that exited on nothing would pass the second and leave the
+    /// bug exactly where it was.
+    ///
+    /// Driven through `Config::from_toml` against real TOML rather than
+    /// hand-built errors, so it pins what an operator's `dogs.toml`
+    /// actually does rather than what this test thinks the parser
+    /// answers with.
+    #[test]
+    fn a_wrong_section_stops_this_dog_and_an_empty_one_leaves_it_running() {
+        let mut last = None;
+        for wrong in [
+            "this is not TOML at all",
+            "token = \"t\"\nguild_id = 1\nbuffer_line = 10\n",
+            "token = \"t\"\nguild_id = 0\n",
+            "token = \"t\"\nguild_id = 1\nlog_channel = 0\n",
+            "token = \"t\"\nguild_id = 1\nflush = \"whenever\"\n",
+            "token = \"t\"\nguild_id = 1\nbuffer_lines = 0\n",
+        ] {
+            let err = config::Config::from_toml(wrong).expect_err(wrong);
+            assert!(
+                on_config_failure("discord", &err, &mut last).is_some(),
+                "a value this dog refuses stops it: {wrong}"
+            );
+        }
+
+        // Both at once, which is what makes the ordering in
+        // `Config::from_toml` load bearing rather than cosmetic: these
+        // stopped the dog only after CodeRabbit caught that a written
+        // value was being reported behind an absent key.
+        for both in ["guild_id = 0\n", "token = \"t\"\nbuffer_lines = 0\n"] {
+            let err = config::Config::from_toml(both).expect_err(both);
+            assert!(
+                on_config_failure("discord", &err, &mut last).is_some(),
+                "a refused value stops it even when a key is also missing: {both}"
+            );
+        }
+
+        for unfilled in ["", "guild_id = 1\n", "token = \"t\"\n"] {
+            let err = config::Config::from_toml(unfilled).expect_err(unfilled);
+            assert!(
+                on_config_failure("discord", &err, &mut last).is_none(),
+                "a section nobody filled in yet does not: {unfilled:?}"
+            );
+        }
+    }
+
+    /// The third thing that reaches the same arm, and the one easiest to
+    /// sweep into the fatal half by accident. A shepherd mid restart
+    /// answers every read this way, and it clears on its own, so a dog
+    /// that exited for it would restart itself out of a handover it was
+    /// built to sit through.
+    #[test]
+    fn a_shepherd_that_could_not_answer_does_not_stop_this_dog() {
+        let mut last = None;
+        for err in [
+            Error::Request(shep_client::RequestError::Closed),
+            Error::Connect(ConnectError::HandshakeClosed),
+            Error::Unexpected {
+                asked: "a DogConfig".to_owned(),
+                got: "a Pong".to_owned(),
+            },
+        ] {
+            assert!(
+                on_config_failure("discord", &err, &mut last).is_none(),
+                "{err}"
+            );
+        }
     }
 
     /// An environment holding exactly one variable, which is the only one

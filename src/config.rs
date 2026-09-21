@@ -152,12 +152,88 @@ pub const MIN_MONITOR_INTERVAL_MS: u64 = 15_000;
 /// Parse `value` into an [`UpDuration`], naming `field` in the [`Error`] so
 /// an operator can find the offending key without reading this dog's
 /// source.
-fn parse_duration(value: String, field: &'static str) -> Result<UpDuration, Error> {
+fn parse_duration(value: &str, field: &'static str) -> Result<UpDuration, Error> {
     value.parse::<UpDuration>().map_err(|source| {
-        Error::Config(format!(
-            "{field} = \"{value}\" is not a duration shep accepts: {source}"
-        ))
+        Error::Config(format!("{field} is not a duration shep accepts: {source}"))
     })
+}
+
+/// Turn a TOML parse failure into an [`Error`] carrying the line number
+/// and nothing else.
+///
+/// The line number is the whole of it on purpose. It is an integer
+/// counted from a byte offset, so it cannot carry a secret, and every
+/// other part of what `toml` produces can.
+///
+/// `toml::de::Error`'s `Display` renders the offending source line under
+/// a caret, and that line is very often `token = "..."`. Its
+/// `message()` is no safer: `invalid type: string "MTIz.SECRET.abc",
+/// expected u64` is what an operator gets for pasting a bot token onto
+/// `guild_id`, and every field in [`Section`] except `token` itself is a
+/// `u64`, `usize` or `bool`, so all of them quote a pasted string back.
+/// `invalid type: integer `9912345678`, expected a string` is the same
+/// thing for a token written unquoted.
+///
+/// From there it goes to stderr, to `$SHEP_HOME/logs/<name>-0-err.log`
+/// through the shepherd's log pump, and back out through `shep bleats`.
+/// Everything else in this module guards that value: `Section` and
+/// `Config` have hand-written `Debug` implementations printing
+/// `<redacted>`, pinned by an exact-string test, and the module doc
+/// explains that the token never travels through the environment for the
+/// same reason.
+///
+/// This landed on the line number only after two narrower rules, and the
+/// way they failed is the argument. First the rendered source was
+/// dropped and `message()` kept, which `invalid type: integer` walked
+/// straight past. Then `message()` was dropped for a failing line that
+/// assigned `token`, which a token pasted onto `guild_id` walked past
+/// just as easily, because the line it sits on is not the token's line.
+/// Both were attempts to enumerate the messages that can quote a value,
+/// and that is not a set anybody enumerates correctly on the third try
+/// either.
+///
+/// shep reached the same place in its own dog framework.
+/// `shep-cli/src/dog/mod.rs` documents `DogRunError::Section`'s
+/// `message` as "the parser's full complaint, which can quote the
+/// offending line", hand-writes a `Debug` that redacts it because it
+/// "can quote a `[dog.<name>]` webhook URL verbatim", and has `run_bark`
+/// discard the error outright: "The fact, not the value: a `[bark]`
+/// section can carry a webhook URL with a bearer token in its path."
+/// This says one thing more than bark does, which is which line.
+///
+/// One narrower rule was proposed and measured, and is written down
+/// here because it is a reasonable thing to want and should not be
+/// rediscovered from scratch: drop `message()` only when it starts with
+/// `invalid type:`, which is the one shape found to quote a value.
+/// `unknown field`, `duplicate key` and `expected newline` all quote a
+/// key or nothing, so `unknown field `buffer_line`` would survive and
+/// the commonest diagnosis would be kept.
+///
+/// It holds for every message this `Section` can currently produce. It
+/// was not taken for two reasons. The prefix is `serde`'s default
+/// `Display` wording rather than a documented contract, so it is
+/// something an upstream bump can change. And it stays correct only
+/// while every field here is a scalar: give one an enum and `unknown
+/// variant `SECRET`` quotes a value without saying `invalid type`. The
+/// leak test below would catch the first of those loudly and the second
+/// only if somebody thought to add a row. Taking a smaller error over a
+/// rule that needs both of those to keep holding is a judgement call,
+/// not a fact, and this is the conservative side of it.
+///
+/// What it costs is real and worth naming: `unknown field
+/// `buffer_line`` was the whole diagnosis for the commonest mistake in
+/// this file, and it is gone. An operator gets the line number, opens
+/// `dogs.toml` at it, and compares against `--print-config` or the
+/// README table. That is a worse error and a safe one, and a bearer
+/// credential is not the thing to spend on a better error message.
+fn parse_failure(text: &str, err: &toml::de::Error) -> Error {
+    let offset = err.span().map_or(0, |span| span.start).min(text.len());
+    let line_number = text[..offset].matches('\n').count() + 1;
+    Error::Config(format!(
+        "line {line_number} does not parse. This dog will not print what is on it or what the \
+         parser made of it, because a mistyped section is exactly where a bot token ends up in \
+         the wrong place. Compare that line against shep-discord --print-config."
+    ))
 }
 
 /// Refuse a present `0`, naming `field` in the [`Error`].
@@ -188,36 +264,56 @@ impl Config {
     ///
     /// # Errors
     /// [`Error::Config`] when the text is not valid TOML, carries a key
-    /// this dog does not know, is missing `token` or `guild_id`, gives
-    /// `flush`, `coalesce` or `monitor_interval` a value [`UpDuration`]
-    /// does not accept, gives `buffer_lines` a `0`, or gives `guild_id`,
-    /// `monitor_channel`, `log_channel` or `err_channel` a present `0`: a
-    /// Discord snowflake is never `0`.
+    /// this dog does not know, gives `flush`, `coalesce` or
+    /// `monitor_interval` a value [`UpDuration`] does not accept, gives
+    /// `buffer_lines` a `0`, or gives `guild_id`, `monitor_channel`,
+    /// `log_channel` or `err_channel` a present `0`: a Discord snowflake
+    /// is never `0`.
+    ///
+    /// [`Error::Unconfigured`] when `token` or `guild_id` is absent,
+    /// which is a section nobody has filled in rather than one anybody
+    /// has got wrong. Which of the two comes back decides whether
+    /// `crate::run` stays up or stops, so a new check added here belongs
+    /// in whichever of these two paragraphs describes it.
     pub fn from_toml(text: &str) -> Result<Self, Error> {
-        let section: Section =
-            toml::from_str(text).map_err(|err| Error::Config(err.to_string()))?;
+        let section: Section = toml::from_str(text).map_err(|err| parse_failure(text, &err))?;
 
-        let token = section
-            .token
-            .ok_or_else(|| Error::Config("token is required".to_owned()))?;
-        // Through `refuse_zero` like the three channels rather than
-        // hand-rolled: one rule, one wording. The order still reads
-        // "must not be 0" for a written `0` and "is required" for an
-        // absent key, since a `Some(0)` never reaches the second step.
-        let guild_id = refuse_zero(section.guild_id, "guild_id")?
-            .ok_or_else(|| Error::Config("guild_id is required".to_owned()))?;
+        // Every value the operator actually wrote is checked first, and
+        // the two keys that may simply be absent are checked last. The
+        // order is the whole difference between the two variants meaning
+        // something and meaning nothing.
+        //
+        // Writing a value is a deliberate act, and getting it wrong is a
+        // mistake this dog should stop for. Leaving a key out may be
+        // nothing more than not having typed it yet, which is every
+        // freshly adopted dog. So a section that is both, `guild_id = 0`
+        // with no `token`, is wrong rather than unfinished: fixing only
+        // the `token` would not make it run, and reporting the absent key
+        // first would leave the dog online saying a value it had already
+        // refused was fine.
+        //
+        // Checked the other way round until CodeRabbit caught it on
+        // shep-pm/shep-discord#3. `token` was resolved before anything
+        // else, so `guild_id = 0` alone, or `token` set with
+        // `buffer_lines = 0`, answered `Unconfigured` and the run loop
+        // stayed up on a value it exists to exit for.
+        //
+        // An empty section is unaffected, which is the case that matters
+        // most: nothing is written, so nothing below can fail, and the
+        // first thing to answer is still `token is required`.
+        let guild_id = refuse_zero(section.guild_id, "guild_id")?;
         let monitor_channel = refuse_zero(section.monitor_channel, "monitor_channel")?;
         let log_channel = refuse_zero(section.log_channel, "log_channel")?;
         let err_channel = refuse_zero(section.err_channel, "err_channel")?;
 
         let flush = section
             .flush
-            .map(|value| parse_duration(value, "flush"))
+            .map(|value| parse_duration(&value, "flush"))
             .transpose()?
             .unwrap_or(UpDuration::from_millis(DEFAULT_FLUSH_MS));
         let coalesce = section
             .coalesce
-            .map(|value| parse_duration(value, "coalesce"))
+            .map(|value| parse_duration(&value, "coalesce"))
             .transpose()?
             .unwrap_or(UpDuration::from_millis(DEFAULT_COALESCE_MS));
         // Raised to the floor rather than refused: an operator who wrote
@@ -225,7 +321,7 @@ impl Config {
         let floor = UpDuration::from_millis(MIN_MONITOR_INTERVAL_MS);
         let monitor_interval = section
             .monitor_interval
-            .map(|value| parse_duration(value, "monitor_interval"))
+            .map(|value| parse_duration(&value, "monitor_interval"))
             .transpose()?
             .map(|interval| interval.max(floor));
 
@@ -233,6 +329,15 @@ impl Config {
         if buffer_lines == 0 {
             return Err(Error::Config("buffer_lines must be at least 1".to_owned()));
         }
+
+        // Last, and only once nothing written is wrong. `refuse_zero`
+        // above has already answered for a written `0`, so these two
+        // report only a key nobody has typed.
+        let token = section
+            .token
+            .ok_or_else(|| Error::Unconfigured("token is required".to_owned()))?;
+        let guild_id =
+            guild_id.ok_or_else(|| Error::Unconfigured("guild_id is required".to_owned()))?;
 
         Ok(Self {
             token,
@@ -312,6 +417,37 @@ mod tests {
         assert!(!rendered.contains("ThisIsNotARealToken"), "{rendered}");
     }
 
+    /// The same guard on [`Config`], which is the type that actually
+    /// holds a resolved token for the life of the process.
+    ///
+    /// `Section` had this test and `Config` did not, while two doc
+    /// comments in this file claimed both were pinned. Nothing in the
+    /// crate formats a `Config` today, so the hand-written `Debug` above
+    /// was guarding a door nobody walks through and would have gone on
+    /// doing so if somebody deleted it. The first `{config:?}` added
+    /// anywhere is what makes it matter, and by then the test has to
+    /// already exist.
+    ///
+    /// Exact string rather than a `contains` check, for the reason the
+    /// `Section` one is: a `Debug` that dropped `token` entirely would
+    /// pass any assertion that only looks for the absence of the secret.
+    #[test]
+    fn a_resolved_config_never_reaches_a_debug_line_either() {
+        let config = Config::from_toml(
+            "token = \"MTIzNDU2Nzg5.GaBcDe.ThisIsNotARealToken\"\nguild_id = 42\n",
+        )
+        .expect("parsed");
+        let rendered = format!("{config:?}");
+        assert_eq!(
+            rendered,
+            "Config { token: <redacted>, guild_id: 42, monitor_channel: None, \
+             monitor_interval: None, log_channel: None, err_channel: None, \
+             flush: UpDuration(1s), coalesce: UpDuration(1s), buffer_lines: 2000, \
+             ignore_dogs: false }"
+        );
+        assert!(!rendered.contains("ThisIsNotARealToken"), "{rendered}");
+    }
+
     #[test]
     fn a_section_without_a_token_names_the_missing_key() {
         let err = Config::from_toml("guild_id = 1")
@@ -328,6 +464,170 @@ mod tests {
         // clearest one.
         let err = Config::from_toml("").expect_err("refused").to_string();
         assert!(err.contains("token"), "{err}");
+    }
+
+    /// A `dogs.toml` that does not parse must not carry the bot token out
+    /// in the error, which is what `toml::de::Error`'s own `Display` does:
+    /// it quotes the offending source line under a caret, and that line is
+    /// usually the one the token is written on. The error reaches stderr,
+    /// `$SHEP_HOME/logs/<name>-0-err.log` through the shepherd's log pump,
+    /// and `shep bleats` after that, so this is the token in clear text in
+    /// a file an operator greps.
+    ///
+    /// Every other guard in this module was already in place. `Section`
+    /// and `Config` print `<redacted>`, pinned by an exact-string test,
+    /// and the module doc says the token never travels through the
+    /// environment. The parse error walked past all of it.
+    ///
+    /// Three shapes, and the order they were found in is why
+    /// [`parse_failure`] ended up printing a line number and nothing
+    /// else.
+    ///
+    /// A syntax error quotes the source line, which is usually the
+    /// token's. A token written unquoted fails as `invalid type: integer
+    /// `...``, with the value inside `message()` rather than inside the
+    /// quoted source. And a token pasted onto the wrong key fails as
+    /// `invalid type: string "..."`, on a line that does not mention
+    /// `token` at all, so no rule that reads the line can see it. There
+    /// is a row for every other field in `Section`, because the shape
+    /// holds whatever the field's type is: the integer and bool ones
+    /// quote the string back through `toml`, and the three duration ones
+    /// parse as TOML and are refused a step later by `parse_duration`.
+    #[test]
+    fn a_section_that_does_not_parse_never_says_what_is_on_the_token_line() {
+        for (toml, secret) in [
+            (
+                "token = \"MTIzNDU2Nzg5.SUPERSECRET.abcdef\" trailing garbage\nguild_id = 1\n",
+                "SUPERSECRET",
+            ),
+            ("token = 99SECRETNUM88\nguild_id = 1\n", "SECRETNUM"),
+            ("token = 9912345678\nguild_id = 1\n", "9912345678"),
+            (
+                "guild_id = 1\ntoken = \"MTIz.ANOTHERSECRET.xyz\" oops\n",
+                "ANOTHERSECRET",
+            ),
+            // A token pasted onto the wrong key, which is the shape
+            // neither earlier rule caught: the value is a well formed
+            // string on a line that does not mention `token`, so
+            // nothing about the line gives it away. Every field in
+            // `Section` except `token` is a `u64`, `usize` or `bool`,
+            // so all of them quote a pasted string back the same way.
+            (
+                "token = \"t\"\nguild_id = \"MTIz.WRONGKEY.abc\"\n",
+                "WRONGKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nlog_channel = \"MTIz.CHANNELKEY.abc\"\n",
+                "CHANNELKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nmonitor_channel = \"MTIz.MONITORKEY.abc\"\n",
+                "MONITORKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nerr_channel = \"MTIz.ERRKEY.abc\"\n",
+                "ERRKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nbuffer_lines = \"MTIz.LINESKEY.abc\"\n",
+                "LINESKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nignore_dogs = \"MTIz.DOGSKEY.abc\"\n",
+                "DOGSKEY",
+            ),
+            // The three duration fields are `String` in `Section`, so a
+            // pasted token parses as TOML and is refused by
+            // `parse_duration` instead. That is a different code path to
+            // every row above and it reaches the same operator log.
+            (
+                "token = \"t\"\nguild_id = 1\nflush = \"MTIz.FLUSHKEY.abc\"\n",
+                "FLUSHKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\ncoalesce = \"MTIz.COALESCEKEY.abc\"\n",
+                "COALESCEKEY",
+            ),
+            (
+                "token = \"t\"\nguild_id = 1\nmonitor_interval = \"MTIz.INTERVALKEY.abc\"\n",
+                "INTERVALKEY",
+            ),
+        ] {
+            let err = Config::from_toml(toml).expect_err(toml).to_string();
+            assert!(!err.contains(secret), "the token reached the error: {err}");
+            assert!(matches!(
+                Config::from_toml(toml).expect_err(toml),
+                Error::Config(_)
+            ));
+        }
+    }
+
+    /// The line number survives, since it is the whole of what is left to
+    /// diagnose with, and a failure that names no line at all would trade
+    /// one unusable error for another.
+    #[test]
+    fn a_parse_failure_still_names_the_line_it_failed_on() {
+        let err = Config::from_toml("token = \"t\"\nguild_id = 1\nbuffer_lines = = 2\n")
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("line 3"), "{err}");
+
+        let on_the_token_line =
+            Config::from_toml("token = \"MTIz.SECRET.abc\" oops\nguild_id = 1\n")
+                .expect_err("refused")
+                .to_string();
+        assert!(on_the_token_line.contains("line 1"), "{on_the_token_line}");
+        assert!(
+            on_the_token_line.contains("bot token"),
+            "it says why it is being terse: {on_the_token_line}"
+        );
+        crate::test_support::assert_no_dashes(&on_the_token_line);
+    }
+
+    /// Which variant a failure answers with is what decides whether the
+    /// run loop stays up or stops, so it is pinned here rather than left
+    /// to whoever reads the message. Every failure this function can
+    /// produce is listed, driven through real TOML rather than built by
+    /// hand: a check added here without a row of its own fails this test
+    /// instead of quietly picking a side.
+    #[test]
+    fn a_section_that_is_wrong_is_told_apart_from_one_nobody_filled_in() {
+        for wrong in [
+            "this is not TOML at all",
+            "token = \"t\"\nguild_id = 1\nbuffer_line = 10\n",
+            "token = \"t\"\nguild_id = 0\n",
+            "token = \"t\"\nguild_id = 1\nmonitor_channel = 0\n",
+            "token = \"t\"\nguild_id = 1\nlog_channel = 0\n",
+            "token = \"t\"\nguild_id = 1\nerr_channel = 0\n",
+            "token = \"t\"\nguild_id = 1\nflush = \"whenever\"\n",
+            "token = \"t\"\nguild_id = 1\ncoalesce = \"whenever\"\n",
+            "token = \"t\"\nguild_id = 1\nmonitor_interval = \"whenever\"\n",
+            "token = \"t\"\nguild_id = 1\nbuffer_lines = 0\n",
+        ] {
+            let err = Config::from_toml(wrong).expect_err(wrong);
+            assert!(matches!(err, Error::Config(_)), "{wrong}: {err:?}");
+        }
+
+        // A section that is both: a value this dog refuses, and a key
+        // nobody has typed. Wrong wins, because fixing only the absent
+        // key would not make it run. These four answered `Unconfigured`
+        // until CodeRabbit caught the ordering on
+        // shep-pm/shep-discord#3, which left the run loop online on a
+        // value it exists to exit for.
+        for both in [
+            "guild_id = 0\n",
+            "guild_id = 1\nflush = \"garbage\"\n",
+            "token = \"t\"\nbuffer_lines = 0\n",
+            "token = \"t\"\nlog_channel = 0\n",
+        ] {
+            let err = Config::from_toml(both).expect_err(both);
+            assert!(matches!(err, Error::Config(_)), "{both}: {err:?}");
+        }
+
+        for unfilled in ["", "guild_id = 1\n", "token = \"t\"\n"] {
+            let err = Config::from_toml(unfilled).expect_err(unfilled);
+            assert!(matches!(err, Error::Unconfigured(_)), "{unfilled}: {err:?}");
+        }
     }
 
     #[test]
@@ -382,12 +682,24 @@ mod tests {
         assert_eq!(config.err_channel, None);
     }
 
+    /// The refusal is the point, and `deny_unknown_fields` on [`Section`]
+    /// is what does it: a misspelled key that parsed and was ignored
+    /// would leave an operator watching a setting they wrote have no
+    /// effect, with nothing anywhere saying why.
+    ///
+    /// This used to assert the error named `buffer_line`, and
+    /// [`parse_failure`] no longer lets it. The key name is not itself a
+    /// secret, but the message that carries it is the same `message()`
+    /// that quotes a pasted bot token, and no rule told the two apart
+    /// across three attempts. The line number is what is left, so that
+    /// is what this asserts.
     #[test]
     fn a_misspelled_key_is_refused_rather_than_ignored() {
         let err = Config::from_toml("token = \"t\"\nguild_id = 1\nbuffer_line = 10\n")
             .expect_err("refused")
             .to_string();
-        assert!(err.contains("buffer_line"), "{err}");
+        assert!(err.contains("line 3"), "{err}");
+        assert!(!err.contains("buffer_line"), "{err}");
     }
 
     // `Config::from_toml("token = \"t\"\nguild_id = 1\n")` against four
