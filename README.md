@@ -108,6 +108,10 @@ enables and starts in one command, so exiting for that would make this dog
 impossible to adopt at all. It stays up, names the section it read and the
 key that is missing, and says so again every hour until you fill it in.
 
+A section that is both, a value it refuses and a key you have not typed
+yet, stops the process. Every value you wrote is checked before any key
+you left out, because fixing the missing key alone would not make it run.
+
 ## Commands
 
 All three carry the administrator permission gate.

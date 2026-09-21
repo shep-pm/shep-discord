@@ -777,6 +777,18 @@ mod tests {
             );
         }
 
+        // Both at once, which is what makes the ordering in
+        // `Config::from_toml` load bearing rather than cosmetic: these
+        // stopped the dog only after CodeRabbit caught that a written
+        // value was being reported behind an absent key.
+        for both in ["guild_id = 0\n", "token = \"t\"\nbuffer_lines = 0\n"] {
+            let err = config::Config::from_toml(both).expect_err(both);
+            assert!(
+                on_config_failure("discord", &err, &mut last).is_some(),
+                "a refused value stops it even when a key is also missing: {both}"
+            );
+        }
+
         for unfilled in ["", "guild_id = 1\n", "token = \"t\"\n"] {
             let err = config::Config::from_toml(unfilled).expect_err(unfilled);
             assert!(

@@ -276,22 +276,30 @@ impl Config {
     pub fn from_toml(text: &str) -> Result<Self, Error> {
         let section: Section = toml::from_str(text).map_err(|err| parse_failure(text, &err))?;
 
-        let token = section
-            .token
-            .ok_or_else(|| Error::Unconfigured("token is required".to_owned()))?;
-        // Through `refuse_zero` like the three channels rather than
-        // hand-rolled: one rule, one wording. The order still reads
-        // "must not be 0" for a written `0` and "is required" for an
-        // absent key, since a `Some(0)` never reaches the second step.
+        // Every value the operator actually wrote is checked first, and
+        // the two keys that may simply be absent are checked last. The
+        // order is the whole difference between the two variants meaning
+        // something and meaning nothing.
         //
-        // The two steps answer different variants for the same reason
-        // they word themselves differently. A written `0` is a value an
-        // operator has to go and change, and `refuse_zero` says so with
-        // an `Error::Config`. An absent key is a section nobody has
-        // filled in yet, which is every first run, so it is an
-        // `Error::Unconfigured` and the run loop stays up for it.
-        let guild_id = refuse_zero(section.guild_id, "guild_id")?
-            .ok_or_else(|| Error::Unconfigured("guild_id is required".to_owned()))?;
+        // Writing a value is a deliberate act, and getting it wrong is a
+        // mistake this dog should stop for. Leaving a key out may be
+        // nothing more than not having typed it yet, which is every
+        // freshly adopted dog. So a section that is both, `guild_id = 0`
+        // with no `token`, is wrong rather than unfinished: fixing only
+        // the `token` would not make it run, and reporting the absent key
+        // first would leave the dog online saying a value it had already
+        // refused was fine.
+        //
+        // Checked the other way round until CodeRabbit caught it on
+        // shep-pm/shep-discord#3. `token` was resolved before anything
+        // else, so `guild_id = 0` alone, or `token` set with
+        // `buffer_lines = 0`, answered `Unconfigured` and the run loop
+        // stayed up on a value it exists to exit for.
+        //
+        // An empty section is unaffected, which is the case that matters
+        // most: nothing is written, so nothing below can fail, and the
+        // first thing to answer is still `token is required`.
+        let guild_id = refuse_zero(section.guild_id, "guild_id")?;
         let monitor_channel = refuse_zero(section.monitor_channel, "monitor_channel")?;
         let log_channel = refuse_zero(section.log_channel, "log_channel")?;
         let err_channel = refuse_zero(section.err_channel, "err_channel")?;
@@ -319,6 +327,15 @@ impl Config {
         if buffer_lines == 0 {
             return Err(Error::Config("buffer_lines must be at least 1".to_owned()));
         }
+
+        // Last, and only once nothing written is wrong. `refuse_zero`
+        // above has already answered for a written `0`, so these two
+        // report only a key nobody has typed.
+        let token = section
+            .token
+            .ok_or_else(|| Error::Unconfigured("token is required".to_owned()))?;
+        let guild_id =
+            guild_id.ok_or_else(|| Error::Unconfigured("guild_id is required".to_owned()))?;
 
         Ok(Self {
             token,
@@ -556,6 +573,22 @@ mod tests {
         ] {
             let err = Config::from_toml(wrong).expect_err(wrong);
             assert!(matches!(err, Error::Config(_)), "{wrong}: {err:?}");
+        }
+
+        // A section that is both: a value this dog refuses, and a key
+        // nobody has typed. Wrong wins, because fixing only the absent
+        // key would not make it run. These four answered `Unconfigured`
+        // until CodeRabbit caught the ordering on
+        // shep-pm/shep-discord#3, which left the run loop online on a
+        // value it exists to exit for.
+        for both in [
+            "guild_id = 0\n",
+            "guild_id = 1\nflush = \"garbage\"\n",
+            "token = \"t\"\nbuffer_lines = 0\n",
+            "token = \"t\"\nlog_channel = 0\n",
+        ] {
+            let err = Config::from_toml(both).expect_err(both);
+            assert!(matches!(err, Error::Config(_)), "{both}: {err:?}");
         }
 
         for unfilled in ["", "guild_id = 1\n", "token = \"t\"\n"] {
