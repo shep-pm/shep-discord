@@ -299,16 +299,19 @@ fn misconfigured_message(section: &str, err: &Error) -> String {
 fn on_config_failure(section: &str, err: &Error, last: &mut Option<Complaint>) -> Option<ExitCode> {
     if matches!(err, Error::Config(_)) {
         eprintln!("{}", misconfigured_message(section, err));
-        // The same code [`refused`] already answers with, rather than
-        // one of the three shep documents for a dog (`5` gave up
-        // waiting, `6` protocol skew, `13` a refused request) or a
-        // fourth of this crate's own. None of those three means "my own
-        // config is wrong", and the shepherd does not branch on the
-        // value anyway: `decide_on_exit` tests it against
-        // `stop_exit_codes` and otherwise restarts regardless. So the
-        // code is read by a person in the `EXIT` column and by nothing
-        // else, and inventing a meaning for one here is a decision that
-        // belongs in a change about exit codes.
+        // A bare failure, deliberately, because shep has no number for
+        // this cause. It documents three for a dog: `5` gave up waiting
+        // for a shepherd, `6` protocol skew, `13` a request the shepherd
+        // refused. Every one of them is about the shepherd, and this is
+        // a dog that cannot read its own file, so claiming one would say
+        // something untrue in the `EXIT` column rather than nothing.
+        //
+        // `12` upward is reserved for a dog's own codes, so a number for
+        // this could be defined. Not here: a code is a contract with
+        // whoever reads it, and writing a new one down unilaterally, in
+        // a change about config handling, is how a taxonomy drifts.
+        // `refused` above is the opposite case and rightly takes shep's
+        // own number, because shep had already assigned one.
         return Some(ExitCode::FAILURE);
     }
 
