@@ -158,6 +158,57 @@ fn parse_duration(value: String, field: &'static str) -> Result<UpDuration, Erro
     })
 }
 
+/// Turn a TOML parse failure into an [`Error`] without quoting the file
+/// back.
+///
+/// `toml::de::Error`'s own `Display` renders the offending source line
+/// under a caret, which is excellent for a compiler and wrong for this
+/// file: the line it quotes is very often `token = "..."`, so the error
+/// carries the bot token in clear text into stderr, into
+/// `$SHEP_HOME/logs/<name>-0-err.log` through the shepherd's log pump,
+/// and out again through `shep bleats`. Everything else here guards that
+/// value. `Section` and `Config` both have hand-written `Debug`
+/// implementations printing `<redacted>`, pinned by an exact-string
+/// test, and the module doc explains that the token never travels
+/// through the environment for the same reason. A parse error walked
+/// past all of it.
+///
+/// shep's own bark dog states the rule this follows, in
+/// `shep-cli/src/dog/mod.rs`: "The fact, not the value: a `[bark]`
+/// section can carry a webhook URL with a bearer token in its path."
+///
+/// So the fact. The line number, which no secret lives in, and
+/// `err.message()`, which is what was expected rather than what was
+/// found. Two things it deliberately does not do:
+///
+/// - It never renders `err` itself, which is where the quoted source
+///   line comes from.
+/// - It drops `message()` too when the failing line assigns `token`,
+///   because `message()` is not unconditionally value free: a token
+///   written unquoted fails as `invalid type: integer `9912345678`,
+///   expected a string`, with the value inside it. A real bot token
+///   cannot be a bare TOML scalar, so that case is an operator's typo
+///   rather than a working config, but a value that is a secret to
+///   somebody is not worth printing to find out.
+fn parse_failure(text: &str, err: &toml::de::Error) -> Error {
+    let offset = err.span().map_or(0, |span| span.start).min(text.len());
+    let head = &text[..offset];
+    let line_number = head.matches('\n').count() + 1;
+
+    let start = head.rfind('\n').map_or(0, |end| end + 1);
+    let line = text[start..]
+        .split_once('\n')
+        .map_or(&text[start..], |(line, _)| line);
+
+    if line.trim_start().starts_with("token") {
+        return Error::Config(format!(
+            "line {line_number} does not parse. This dog will not say what is on it, because \
+             that is the line the bot token is written on."
+        ));
+    }
+    Error::Config(format!("line {line_number}: {}", err.message()))
+}
+
 /// Refuse a present `0`, naming `field` in the [`Error`].
 ///
 /// A Discord snowflake is never `0`, so a `0` here is a placeholder an
@@ -198,8 +249,7 @@ impl Config {
     /// `crate::run` stays up or stops, so a new check added here belongs
     /// in whichever of these two paragraphs describes it.
     pub fn from_toml(text: &str) -> Result<Self, Error> {
-        let section: Section =
-            toml::from_str(text).map_err(|err| Error::Config(err.to_string()))?;
+        let section: Section = toml::from_str(text).map_err(|err| parse_failure(text, &err))?;
 
         let token = section
             .token
@@ -339,6 +389,68 @@ mod tests {
         // clearest one.
         let err = Config::from_toml("").expect_err("refused").to_string();
         assert!(err.contains("token"), "{err}");
+    }
+
+    /// A `dogs.toml` that does not parse must not carry the bot token out
+    /// in the error, which is what `toml::de::Error`'s own `Display` does:
+    /// it quotes the offending source line under a caret, and that line is
+    /// usually the one the token is written on. The error reaches stderr,
+    /// `$SHEP_HOME/logs/<name>-0-err.log` through the shepherd's log pump,
+    /// and `shep bleats` after that, so this is the token in clear text in
+    /// a file an operator greps.
+    ///
+    /// Every other guard in this module was already in place. `Section`
+    /// and `Config` print `<redacted>`, pinned by an exact-string test,
+    /// and the module doc says the token never travels through the
+    /// environment. The parse error walked past all of it.
+    ///
+    /// The second and third cases are not syntax errors at all. A token
+    /// written unquoted fails as `invalid type: integer `...``, with the
+    /// value inside `message()` rather than inside the quoted source, so
+    /// dropping the source alone does not cover it.
+    #[test]
+    fn a_section_that_does_not_parse_never_says_what_is_on_the_token_line() {
+        for (toml, secret) in [
+            (
+                "token = \"MTIzNDU2Nzg5.SUPERSECRET.abcdef\" trailing garbage\nguild_id = 1\n",
+                "SUPERSECRET",
+            ),
+            ("token = 99SECRETNUM88\nguild_id = 1\n", "SECRETNUM"),
+            ("token = 9912345678\nguild_id = 1\n", "9912345678"),
+            (
+                "guild_id = 1\ntoken = \"MTIz.ANOTHERSECRET.xyz\" oops\n",
+                "ANOTHERSECRET",
+            ),
+        ] {
+            let err = Config::from_toml(toml).expect_err(toml).to_string();
+            assert!(!err.contains(secret), "the token reached the error: {err}");
+            assert!(matches!(
+                Config::from_toml(toml).expect_err(toml),
+                Error::Config(_)
+            ));
+        }
+    }
+
+    /// The line number survives, since it is the whole of what is left to
+    /// diagnose with, and a failure that names no line at all would trade
+    /// one unusable error for another.
+    #[test]
+    fn a_parse_failure_still_names_the_line_it_failed_on() {
+        let err = Config::from_toml("token = \"t\"\nguild_id = 1\nbuffer_lines = = 2\n")
+            .expect_err("refused")
+            .to_string();
+        assert!(err.contains("line 3"), "{err}");
+
+        let on_the_token_line =
+            Config::from_toml("token = \"MTIz.SECRET.abc\" oops\nguild_id = 1\n")
+                .expect_err("refused")
+                .to_string();
+        assert!(on_the_token_line.contains("line 1"), "{on_the_token_line}");
+        assert!(
+            on_the_token_line.contains("bot token"),
+            "it says why it is being terse: {on_the_token_line}"
+        );
+        crate::test_support::assert_no_dashes(&on_the_token_line);
     }
 
     /// Which variant a failure answers with is what decides whether the
