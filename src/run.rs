@@ -252,20 +252,19 @@ fn refused(daemon_version: Option<&str>, message: &str) -> ExitCode {
 
 /// The exit code a refused `dogs.toml` ends this process on.
 ///
-/// shep's own number for the cause. `shep-cli`'s `ExitCode` enum
-/// documents `InvalidConfig = 4` as "a Flockfile or daemon config failed
-/// validation", and a `dogs.toml` section this dog refuses is a config
-/// file that failed validation. That sentence is the whole argument and
-/// it needs no second source.
+/// shep's own number for the cause, and its own dogs already exit on it
+/// for this exact thing. `shep-cli/src/dog/mod.rs` is the precedent:
+/// `exit_code_for` maps `DogRunError::Section { .. }`, which is a dog's
+/// `dogs.toml` section failing to parse into its config type, to
+/// `ExitCode::InvalidConfig`, and `run_bark` returns the same code
+/// directly when `[bark]` does not parse or its rule set is rejected.
+/// A built-in dog refusing its section exits `4`, so an adopted one
+/// refusing its section exits `4`.
 ///
-/// `RpcErrorCode::InvalidConfig` is the same name on the wire, but it is
-/// worth being exact about what the daemon uses it for, because it is
-/// not quite this. Its dog-related uses are refusals of authority rather
-/// than of a value: `a_dog_is_refused_a_config_field_rather_than_given_one`
-/// in shep's `rpc/tests/dog_fields.rs` answers it for `set_field` on a
-/// dog's `script`, which the daemon will not let anybody set at any
-/// value, since a dog runs at its own trust level. Related, not the same
-/// thing, and the code is right here on the `ExitCode` doc alone.
+/// That is the argument. `ExitCode`'s own doc comment calls `4` "a
+/// Flockfile or daemon config failed validation", which fits and is
+/// weaker support than the code doing it: a sentence has to be read
+/// across to this case, and `run_bark` is this case.
 ///
 /// Read rather than written, which is the whole test. shep assigns `0`
 /// through `13` and nothing above, and `12` and `13` are its own

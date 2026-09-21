@@ -173,9 +173,23 @@ fn parse_duration(value: String, field: &'static str) -> Result<UpDuration, Erro
 /// through the environment for the same reason. A parse error walked
 /// past all of it.
 ///
-/// shep's own bark dog states the rule this follows, in
-/// `shep-cli/src/dog/mod.rs`: "The fact, not the value: a `[bark]`
-/// section can carry a webhook URL with a bearer token in its path."
+/// shep hit this in its own dog framework and says so. In
+/// `shep-cli/src/dog/mod.rs`, `DogRunError::Section`'s `message` field is
+/// documented as "the parser's full complaint, which can quote the
+/// offending line", the enum's `Debug` is hand-written to redact it
+/// because it "can quote a `[dog.<name>]` webhook URL verbatim", and
+/// `run_bark` discards the error entirely: "The fact, not the value: a
+/// `[bark]` section can carry a webhook URL with a bearer token in its
+/// path."
+///
+/// bark goes further than this does. It prints one fixed sentence and no
+/// detail at all, not even a line number. This keeps the line number,
+/// which is an integer counted from a byte offset and cannot carry a
+/// secret, and keeps `message()` for a line that does not assign
+/// `token`, because "unknown field `buffer_line`" is the whole diagnosis
+/// for the commonest mistake in this file and a key name is not a
+/// secret. The narrower rule is worth the reasoning it costs; bark's
+/// absolute one would be right too.
 ///
 /// So the fact. The line number, which no secret lives in, and
 /// `err.message()`, which is what was expected rather than what was
