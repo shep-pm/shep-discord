@@ -39,8 +39,10 @@ pub enum Error {
     ///
     /// Carries the problem and not the section name, because the section
     /// is whatever name this dog was adopted under: `[discord]` only by
-    /// default. Whoever prints this knows that name and says it;
-    /// `crate::run::config_failed_message` is the one place that does.
+    /// default. Whoever prints this knows that name and says it:
+    /// `crate::run::misconfigured_message` for this variant, which is the
+    /// arm `crate::run::on_config_failure` exits on, and
+    /// `crate::run::config_failed_message` for the arms it stays up for.
     Config(String),
     /// This dog's own section of `dogs.toml` has not been filled in yet:
     /// a key this dog cannot default is absent.
