@@ -201,6 +201,25 @@ fn parse_duration(value: String, field: &'static str) -> Result<UpDuration, Erro
 /// section can carry a webhook URL with a bearer token in its path."
 /// This says one thing more than bark does, which is which line.
 ///
+/// One narrower rule was proposed and measured, and is written down
+/// here because it is a reasonable thing to want and should not be
+/// rediscovered from scratch: drop `message()` only when it starts with
+/// `invalid type:`, which is the one shape found to quote a value.
+/// `unknown field`, `duplicate key` and `expected newline` all quote a
+/// key or nothing, so `unknown field `buffer_line`` would survive and
+/// the commonest diagnosis would be kept.
+///
+/// It holds for every message this `Section` can currently produce. It
+/// was not taken for two reasons. The prefix is `serde`'s default
+/// `Display` wording rather than a documented contract, so it is
+/// something an upstream bump can change. And it stays correct only
+/// while every field here is a scalar: give one an enum and `unknown
+/// variant `SECRET`` quotes a value without saying `invalid type`. The
+/// leak test below would catch the first of those loudly and the second
+/// only if somebody thought to add a row. Taking a smaller error over a
+/// rule that needs both of those to keep holding is a judgement call,
+/// not a fact, and this is the conservative side of it.
+///
 /// What it costs is real and worth naming: `unknown field
 /// `buffer_line`` was the whole diagnosis for the commonest mistake in
 /// this file, and it is gone. An operator gets the line number, opens
