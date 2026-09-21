@@ -415,6 +415,37 @@ mod tests {
         assert!(!rendered.contains("ThisIsNotARealToken"), "{rendered}");
     }
 
+    /// The same guard on [`Config`], which is the type that actually
+    /// holds a resolved token for the life of the process.
+    ///
+    /// `Section` had this test and `Config` did not, while two doc
+    /// comments in this file claimed both were pinned. Nothing in the
+    /// crate formats a `Config` today, so the hand-written `Debug` above
+    /// was guarding a door nobody walks through and would have gone on
+    /// doing so if somebody deleted it. The first `{config:?}` added
+    /// anywhere is what makes it matter, and by then the test has to
+    /// already exist.
+    ///
+    /// Exact string rather than a `contains` check, for the reason the
+    /// `Section` one is: a `Debug` that dropped `token` entirely would
+    /// pass any assertion that only looks for the absence of the secret.
+    #[test]
+    fn a_resolved_config_never_reaches_a_debug_line_either() {
+        let config = Config::from_toml(
+            "token = \"MTIzNDU2Nzg5.GaBcDe.ThisIsNotARealToken\"\nguild_id = 42\n",
+        )
+        .expect("parsed");
+        let rendered = format!("{config:?}");
+        assert_eq!(
+            rendered,
+            "Config { token: <redacted>, guild_id: 42, monitor_channel: None, \
+             monitor_interval: None, log_channel: None, err_channel: None, \
+             flush: UpDuration(1s), coalesce: UpDuration(1s), buffer_lines: 2000, \
+             ignore_dogs: false }"
+        );
+        assert!(!rendered.contains("ThisIsNotARealToken"), "{rendered}");
+    }
+
     #[test]
     fn a_section_without_a_token_names_the_missing_key() {
         let err = Config::from_toml("guild_id = 1")
