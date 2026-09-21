@@ -320,7 +320,12 @@ const INVALID_CONFIG: u8 = 4;
 /// the sentence has to carry both why that is happening and what ends it.
 fn misconfigured_message(section: &str, err: &Error) -> String {
     format!(
-        "shep-discord: [{section}] in dogs.toml: {err}. Nothing about that clears on its own,          so every retry would be the same failure. Exiting rather than staying up: a dog that          kept answering the shepherd's handshake while answering Discord never would be          reported online on every column a listing has, and the only evidence would be this          line. Fix the value and run shep restart {section}."
+        "shep-discord: [{section}] in dogs.toml: {err}. Nothing about that clears on \
+         its own, so every retry would be the same failure. Exiting rather than \
+         staying up: a dog that kept answering the shepherd's handshake while never \
+         answering Discord would be reported online on every column a listing has, \
+         and the only evidence would be this line. Fix the value and run \
+         shep restart {section}."
     )
 }
 
@@ -650,6 +655,29 @@ mod tests {
             "chatter",
             &Error::Config("buffer_lines must be at least 1".to_owned()),
         ));
+    }
+
+    /// A run of spaces inside a message reads as a rendering fault to
+    /// whoever is already staring at an error. It is also what a `\`
+    /// continued string leaves behind when the continuation goes and the
+    /// indentation stays, which is how one got in.
+    #[test]
+    fn nothing_printed_for_a_person_carries_a_double_space() {
+        for message in [
+            unadopted_message(DEFAULT_NAME),
+            refused_message(Some("9"), "protocol too old"),
+            gateway_ended_message(&Ok(())),
+            config_failed_message(
+                "chatter",
+                &Error::Unconfigured("token is required".to_owned()),
+            ),
+            misconfigured_message(
+                "chatter",
+                &Error::Config("buffer_lines must be at least 1".to_owned()),
+            ),
+        ] {
+            assert!(!message.contains("  "), "two spaces in a row: {message:?}");
+        }
     }
 
     /// The name of the section is the diagnosis for the likeliest first
