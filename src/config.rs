@@ -186,24 +186,37 @@ impl Config {
     ///
     /// # Errors
     /// [`Error::Config`] when the text is not valid TOML, carries a key
-    /// this dog does not know, is missing `token` or `guild_id`, gives
-    /// `flush`, `coalesce` or `monitor_interval` a value [`UpDuration`]
-    /// does not accept, gives `buffer_lines` a `0`, or gives `guild_id`,
-    /// `monitor_channel`, `log_channel` or `err_channel` a present `0`: a
-    /// Discord snowflake is never `0`.
+    /// this dog does not know, gives `flush`, `coalesce` or
+    /// `monitor_interval` a value [`UpDuration`] does not accept, gives
+    /// `buffer_lines` a `0`, or gives `guild_id`, `monitor_channel`,
+    /// `log_channel` or `err_channel` a present `0`: a Discord snowflake
+    /// is never `0`.
+    ///
+    /// [`Error::Unconfigured`] when `token` or `guild_id` is absent,
+    /// which is a section nobody has filled in rather than one anybody
+    /// has got wrong. Which of the two comes back decides whether
+    /// `crate::run` stays up or stops, so a new check added here belongs
+    /// in whichever of these two paragraphs describes it.
     pub fn from_toml(text: &str) -> Result<Self, Error> {
         let section: Section =
             toml::from_str(text).map_err(|err| Error::Config(err.to_string()))?;
 
         let token = section
             .token
-            .ok_or_else(|| Error::Config("token is required".to_owned()))?;
+            .ok_or_else(|| Error::Unconfigured("token is required".to_owned()))?;
         // Through `refuse_zero` like the three channels rather than
         // hand-rolled: one rule, one wording. The order still reads
         // "must not be 0" for a written `0` and "is required" for an
         // absent key, since a `Some(0)` never reaches the second step.
+        //
+        // The two steps answer different variants for the same reason
+        // they word themselves differently. A written `0` is a value an
+        // operator has to go and change, and `refuse_zero` says so with
+        // an `Error::Config`. An absent key is a section nobody has
+        // filled in yet, which is every first run, so it is an
+        // `Error::Unconfigured` and the run loop stays up for it.
         let guild_id = refuse_zero(section.guild_id, "guild_id")?
-            .ok_or_else(|| Error::Config("guild_id is required".to_owned()))?;
+            .ok_or_else(|| Error::Unconfigured("guild_id is required".to_owned()))?;
         let monitor_channel = refuse_zero(section.monitor_channel, "monitor_channel")?;
         let log_channel = refuse_zero(section.log_channel, "log_channel")?;
         let err_channel = refuse_zero(section.err_channel, "err_channel")?;
@@ -326,6 +339,36 @@ mod tests {
         // clearest one.
         let err = Config::from_toml("").expect_err("refused").to_string();
         assert!(err.contains("token"), "{err}");
+    }
+
+    /// Which variant a failure answers with is what decides whether the
+    /// run loop stays up or stops, so it is pinned here rather than left
+    /// to whoever reads the message. Every failure this function can
+    /// produce is listed, driven through real TOML rather than built by
+    /// hand: a check added here without a row of its own fails this test
+    /// instead of quietly picking a side.
+    #[test]
+    fn a_section_that_is_wrong_is_told_apart_from_one_nobody_filled_in() {
+        for wrong in [
+            "this is not TOML at all",
+            "token = \"t\"\nguild_id = 1\nbuffer_line = 10\n",
+            "token = \"t\"\nguild_id = 0\n",
+            "token = \"t\"\nguild_id = 1\nmonitor_channel = 0\n",
+            "token = \"t\"\nguild_id = 1\nlog_channel = 0\n",
+            "token = \"t\"\nguild_id = 1\nerr_channel = 0\n",
+            "token = \"t\"\nguild_id = 1\nflush = \"whenever\"\n",
+            "token = \"t\"\nguild_id = 1\ncoalesce = \"whenever\"\n",
+            "token = \"t\"\nguild_id = 1\nmonitor_interval = \"whenever\"\n",
+            "token = \"t\"\nguild_id = 1\nbuffer_lines = 0\n",
+        ] {
+            let err = Config::from_toml(wrong).expect_err(wrong);
+            assert!(matches!(err, Error::Config(_)), "{wrong}: {err:?}");
+        }
+
+        for unfilled in ["", "guild_id = 1\n", "token = \"t\"\n"] {
+            let err = Config::from_toml(unfilled).expect_err(unfilled);
+            assert!(matches!(err, Error::Unconfigured(_)), "{unfilled}: {err:?}");
+        }
     }
 
     #[test]

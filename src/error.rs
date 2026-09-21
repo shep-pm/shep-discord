@@ -32,11 +32,35 @@ pub enum Error {
     /// This dog's own section of `dogs.toml` did not parse, or a value in
     /// it is outside what this dog accepts.
     ///
+    /// A section that is WRONG, as against one that is merely empty; see
+    /// [`Self::Unconfigured`] for why the two cannot share a variant.
+    /// Nothing here clears on its own, because the only thing that would
+    /// clear it is an operator editing the file.
+    ///
     /// Carries the problem and not the section name, because the section
     /// is whatever name this dog was adopted under: `[discord]` only by
     /// default. Whoever prints this knows that name and says it;
     /// `crate::run::config_failed_message` is the one place that does.
     Config(String),
+    /// This dog's own section of `dogs.toml` has not been filled in yet:
+    /// a key this dog cannot default is absent.
+    ///
+    /// Split out of [`Self::Config`] because the two ask opposite things
+    /// of the run loop, and one flat variant covering both is what made
+    /// the obvious fix wrong. A section that is wrong stays wrong until
+    /// somebody edits it, so retrying is an infinite run of the same
+    /// failure and `crate::run` exits on it. A section that is merely
+    /// empty is what every freshly adopted dog has: `shep adopt` vets,
+    /// registers, enables and starts in one command, so an absent `token`
+    /// is the state of every first run before an operator has typed one.
+    /// Exiting for that would spend the shepherd's restart budget in
+    /// seconds and land this dog `Errored` before it could be configured
+    /// at all, which is the opposite of the order shep's own docs ask an
+    /// operator for.
+    ///
+    /// Carries the problem and not the section name, for the same reason
+    /// [`Self::Config`] does.
+    Unconfigured(String),
     /// Discord itself refused or could not answer a request a command
     /// made once the gateway came up: a broken token, a permission the
     /// guild never granted the bot, or the request otherwise failing.
@@ -62,7 +86,7 @@ impl fmt::Display for Error {
             Self::Unexpected { asked, got } => {
                 write!(f, "asked the shepherd for {asked} and got {got}")
             }
-            Self::Config(message) => write!(f, "{message}"),
+            Self::Config(message) | Self::Unconfigured(message) => write!(f, "{message}"),
             Self::Discord(err) => write!(f, "Discord refused a request: {err}"),
         }
     }
@@ -74,7 +98,7 @@ impl core::error::Error for Error {
             Self::Connect(err) => Some(err),
             Self::Request(err) => Some(err),
             Self::Discord(err) => Some(err),
-            Self::Unexpected { .. } | Self::Config(_) => None,
+            Self::Unexpected { .. } | Self::Config(_) | Self::Unconfigured(_) => None,
         }
     }
 }
@@ -104,7 +128,7 @@ mod tests {
 
     /// Every arm of this enum reaches a Discord followup, through
     /// `bot::interaction::report_failure`, and reaches a terminal through
-    /// the run loop's own `eprintln!`. That makes all five person-facing
+    /// the run loop's own `eprintln!`. That makes all six person-facing
     /// strings, and this module had no test at all until now.
     ///
     /// The three wrapping arms are built from a real inner error rather
@@ -121,7 +145,8 @@ mod tests {
                 asked: "a Flock".to_owned(),
                 got: "a Pong".to_owned(),
             },
-            Error::Config("token is required".to_owned()),
+            Error::Config("buffer_lines must be at least 1".to_owned()),
+            Error::Unconfigured("token is required".to_owned()),
             Error::Discord(Box::new(serenity::Error::Other("refused"))),
         ];
         for err in &errors {
