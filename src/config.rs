@@ -103,12 +103,14 @@ impl fmt::Debug for Section {
 /// there is nothing here for a timing-safe comparison to protect.
 #[derive(PartialEq)]
 pub struct Config {
-    // Read through this field by the derived `PartialEq::eq` above, which
-    // is why this needs no `#[allow(dead_code)]`: the generated `eq`
-    // counts as a read for dead-code purposes whether or not anything
-    // calls it in a plain build, and nothing here does. The hand-written `Debug` below still redacts it rather than
-    // reading it, which is a decision about what a log line should show,
-    // not evidence this field goes otherwise unread.
+    // Where the bot token goes. Three readers in a plain build, and each
+    // one hands it to serenity: `wiring::Wiring::new` builds a
+    // `bot::channel::Live` for the monitor channel and a `DiscordSink` for
+    // the log streams, which hold it inside a serenity `Http`, and
+    // `bot::run_once` builds the gateway `Client` with it. The derived
+    // `PartialEq` above reads it as well, for the reason the struct's own
+    // doc gives. The hand-written `Debug` below prints `<redacted>` rather
+    // than reading it, so printing a whole `Config` does not show it.
     pub token: String,
     pub guild_id: u64,
     pub monitor_channel: Option<u64>,
