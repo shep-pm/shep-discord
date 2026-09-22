@@ -10,14 +10,15 @@ use core::fmt;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use shep_client::{dogs::DogConfig, shep_core::values::UpDuration};
+use shep_client::{dogs::dog_config, shep_core::values::UpDuration};
 
 use crate::error::Error;
 
 /// What an operator may write under `[discord]`. Every field is optional so
 /// a half-filled section still parses and the error names the missing key,
 /// rather than serde refusing the whole table.
-#[derive(Default, Deserialize, JsonSchema, DogConfig)]
+#[dog_config]
+#[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "discord", description = "Settings for the shep-discord dog.")]
 pub struct Section {
@@ -751,7 +752,7 @@ mod tests {
 
     /// The schema's property names, sorted.
     fn schema_keys() -> Vec<String> {
-        let schema = shep_client::dogs::config_schema::<Section>().expect("publishable");
+        let schema = shep_client::dogs::config_schema::<Section>();
         let mut keys: Vec<String> = schema
             .as_value()
             .get("properties")
@@ -762,6 +763,40 @@ mod tests {
             .collect();
         keys.sort();
         keys
+    }
+
+    /// That the credential still carries the mark lookout's config pane
+    /// reads to blank the field out.
+    ///
+    /// `dog_config` puts `x-shep-secret` on the field rather than on its
+    /// name, so `schemars` carries it wherever it puts that field. A build
+    /// that compiles proves only that the attribute ran: an expansion that
+    /// marked nothing would typecheck exactly as well, and the marking is
+    /// the whole of what the attribute is for. Reading it back out of the
+    /// generated schema is the only check that fails when it stops
+    /// arriving.
+    ///
+    /// Both halves on purpose, for the reason `shep-client`'s own test
+    /// gives: an expansion that marked every property would pass a test
+    /// that only looked at `token`.
+    #[test]
+    fn the_token_carries_the_secret_mark_and_nothing_else_does() {
+        let schema = shep_client::dogs::config_schema::<Section>();
+        let value = schema.as_value();
+
+        assert_eq!(
+            value.pointer("/properties/token/x-shep-secret"),
+            Some(&serde_json::Value::Bool(true)),
+            "{value}"
+        );
+
+        for key in schema_keys().iter().filter(|key| key.as_str() != "token") {
+            assert_eq!(
+                value.pointer(&format!("/properties/{key}/x-shep-secret")),
+                None,
+                "{key} is not a credential"
+            );
+        }
     }
 
     // A one-way `contains` check, checking only that the schema's keys

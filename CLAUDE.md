@@ -55,6 +55,13 @@ file here, at the bottom, so the last match is the one that counts.
   an exact-string test. `config::Section` and `config::Config` are the
   examples; both print `<redacted>` in place of `token` regardless of
   whether one is set.
+- The `token` field of `config::Section` carries `x-shep-secret` in the
+  generated schema, and no other property does. `dog_config` puts the mark
+  on the field, so a build that compiles proves only that the attribute
+  ran: a `Section` with the `#[shep(secret)]` line deleted still compiles
+  and still passes every other test. `config.rs` reads the mark back out of
+  `config_schema::<Section>()`, and `tests/probe.rs` reads it out of what
+  the spawned binary prints for `--schema`.
 - Every fallible `pub fn` has a `# Errors` section.
 - `#![forbid(unsafe_code)]` at the crate root, in `src/main.rs`.
 
@@ -92,12 +99,24 @@ file here, at the bottom, so the last match is the one that counts.
   default; `config.rs`'s own round-trip test is the check.
 - `shep-client` comes by version from crates.io and is the only path to
   shep-core: `shep_client::shep_core`, never a second direct dependency. The
-  floor is 0.8.2, because `Request::HostUsage` (what `/system` answers from)
-  is absent from 0.7.4 and from 0.8.0. That raises the protocol this dog
-  announces from 8 to 9, which does not lock out an older shepherd: a
-  shepherd accepts any peer at or above its own `MIN_SUPPORTED`, still 8.
-  What it does mean is a shepherd too old to know `HostUsage` answers
-  `/system` with an error instead of an embed.
+  floor is 0.10.0, because the `DogConfig` derive is gone from it. The
+  `dog_config` attribute replaced it, and `#[dog_config]` goes ABOVE the
+  `#[derive(...)]` line on `config::Section`. rustc expands the attributes
+  above an attribute macro before running it, so a `JsonSchema` derive
+  listed higher has already built its impl by the time the mark goes on the
+  field and the mark reaches no schema. Today that order is a compile error
+  naming the fix rather than a config pane that quietly stops masking a
+  token, but only because `Section` has a field to mark: the guard is
+  `!marked.is_empty() && !derives_json_schema`, so a config type carrying
+  no `#[shep(secret)]` takes the wrong order in silence. Read the order
+  rather than trusting rustc to read it for you. The older floor still
+  holds underneath: `Request::HostUsage` (what `/system` answers from)
+  arrived in 0.8.2 and is absent from 0.7.4 and from 0.8.0. That raises
+  the protocol this dog announces from 8 to 9, which does not lock out an
+  older shepherd: a shepherd accepts any peer at
+  or above its own `MIN_SUPPORTED`, still 8. What it does mean is a
+  shepherd too old to know `HostUsage` answers `/system` with an error
+  instead of an embed.
 
 ## Style
 
