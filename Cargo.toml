@@ -18,14 +18,17 @@ exclude = ["/docs/"]
 
 [dependencies]
 # The only path to shep-core: `shep_client::shep_core`, never a second
-# direct dependency. 0.8.2 is the floor because `Request::HostUsage` is,
-# and `/system` is built on it. It is absent from 0.7.4 and from 0.8.0.
-# The two older reasons still hold underneath: the `schema` feature
+# direct dependency. 0.10.0 is the floor because the `DogConfig` derive is
+# gone from it, replaced by the `dog_config` attribute, and the attribute
+# is what puts `x-shep-secret` on the field rather than on its name. The
+# older reasons still hold underneath, each one a floor this version clears
+# anyway: `Request::HostUsage`, which `/system` is built on, arrived in
+# 0.8.2 and is absent from 0.7.4 and from 0.8.0; the `schema` feature
 # forwards down to shep-core so `MemSize` and `UpDuration` carry their
-# `JsonSchema` impls, and the protocol number a dog announces has to be at
-# or above the shepherd's `MIN_SUPPORTED`. That number is still 8, so
-# announcing 9 locks out nothing.
-shep-client = "0.8.2"
+# `JsonSchema` impls; and the protocol number a dog announces has to be at
+# or above the shepherd's `MIN_SUPPORTED`. That number is still 8 and the
+# protocol is still 9, so announcing 9 locks out nothing.
+shep-client = "0.10.0"
 # `#[derive(JsonSchema)]` expands to absolute `schemars::` paths, so the
 # crate has to be nameable here even though shep-client carries it.
 schemars = { version = "1.2.2", default-features = false, features = ["derive", "std"] }
@@ -38,7 +41,7 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "builder", "rustls_backend"] }
 
 [dev-dependencies]
-shep-client = { version = "0.8.2", features = ["test-support"] }
+shep-client = { version = "0.10.0", features = ["test-support"] }
 serde_json = "1"
 tempfile = "3"
 
