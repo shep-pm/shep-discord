@@ -120,6 +120,8 @@ file here, at the bottom, so the last match is the one that counts.
 
 ## Style
 
+- Invoke the `rust-house-style` skill before writing or reviewing Rust. The
+  rules are shep-pm/rust-house-style, IR-1..IR-48.
 - Doc comments here are long on purpose and explain the decision, not the
   syntax. Match that for new items rather than trimming to a one-liner.
 - `.coderabbit.yaml` restates the Rust rules reviewers hold this crate to.
