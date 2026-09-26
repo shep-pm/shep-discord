@@ -20,23 +20,12 @@ connection and a shep bus subscription, sharing one config section.
   `--schema` the way `shep adopt` does, with `SHEP_HOME` pointed at a
   temporary directory so it never touches a real shepherd.
 
-## The 500-line file cap
+## File size
 
-500 lines is a question, not a hard limit: ask whether the file needs to be
-that long before adding more to it. 1000 is a stop: split it, or say why
-not. Measure PRODUCTION lines, not the whole file, since a long `#[cfg(test)]`
-module at the bottom is not the thing the cap is about:
-
-```sh
-grep -n "^#\[cfg(test)\]" <file> | tail -1
-```
-
-`tail -1` on purpose. `grep ... | awk '... {exit}'` or any other
-first-match form stops at the FIRST `#[cfg(test)]` it finds, which is wrong
-the moment a file nests a second test module or has an inline `#[cfg(test)]`
-helper above the real one; that shape produced a false compliance claim
-during this crate's own build. There is exactly one real test module per
-file here, at the bottom, so the last match is the one that counts.
+IR-48 counts every line, tests and comments included. Past 500 lines, weigh
+a split before adding more and say in the PR which way you went. Over 1000
+fails CI (`.github/workflows/file-size.yml`). Moving a test module into its
+own file is not a split.
 
 ## Rules the tests already enforce
 
@@ -120,6 +109,8 @@ file here, at the bottom, so the last match is the one that counts.
 
 ## Style
 
+- Invoke the `rust-house-style` skill before writing or reviewing Rust. The
+  rules are shep-pm/rust-house-style, IR-1..IR-48.
 - Doc comments here are long on purpose and explain the decision, not the
   syntax. Match that for new items rather than trimming to a one-liner.
 - `.coderabbit.yaml` restates the Rust rules reviewers hold this crate to.

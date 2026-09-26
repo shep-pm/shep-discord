@@ -1,0 +1,18 @@
+name: file size
+# IR-48: no Rust file over 1000 lines. The check is a reusable workflow in
+# shep-pm/rust-house-style, pinned by tag. No file is over today, so there is
+# no baseline and every file fails past 1000. No generated `.rs` files exist
+# here, so nothing is excluded.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  file-size:
+    uses: shep-pm/rust-house-style/.github/workflows/file-size.yml@v0.1.0
