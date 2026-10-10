@@ -120,11 +120,11 @@ redacted_debug!(Section {
 
 /// The resolved settings, with every optional field decided.
 ///
-/// `PartialEq` is derived, not hand-written, and it does compare `token`:
+/// `PartialEq` and `Eq` are derived, not hand-written, and they do compare `token`:
 /// it exists for the round-trip test below to compare a whole `Config`
 /// against another in one assertion, never to authenticate anything, so
 /// there is nothing here for a timing-safe comparison to protect.
-#[derive(PartialEq)]
+#[derive(PartialEq, Eq)]
 pub struct Config {
     // Where the bot token goes. Three readers in a plain build, and each
     // one hands it to serenity: `wiring::Wiring::new` builds a
@@ -658,6 +658,51 @@ mod tests {
             MIN_MONITOR_INTERVAL_MS,
             "a monitor refreshing every second spends the channel's whole rate budget"
         );
+    }
+
+    /// `from_toml` is where `ignore_dogs` is decided, and the only other
+    /// tests that touch it build the bool by hand. Without a written `true`
+    /// going through here, `unwrap_or(false)` turning into `unwrap_or(true)`
+    /// would fail nothing.
+    #[test]
+    fn a_written_ignore_dogs_is_kept_and_an_unwritten_one_is_off() {
+        for (written, expected) in [
+            ("ignore_dogs = true\n", true),
+            ("ignore_dogs = false\n", false),
+            ("", false),
+        ] {
+            let config = Config::from_toml(&format!("token = \"t\"\nguild_id = 1\n{written}"))
+                .expect("parsed");
+            assert_eq!(config.ignore_dogs, expected, "{written:?}");
+        }
+    }
+
+    /// The failure interpolates shep-core's own wording for why a duration
+    /// was refused, so a shep-core release that reworded it with a dash
+    /// would reach `shep bleats` through this message with every other gate
+    /// green. Driven with real bad values for each of the three keys, for
+    /// the reason `error.rs` builds its wrapping arms from real inner errors.
+    #[test]
+    fn a_duration_that_does_not_parse_says_so_without_a_dash() {
+        for key in ["flush", "coalesce", "monitor_interval"] {
+            for bad in ["whenever", "", "-1s", "1 - 2s", "10x"] {
+                let err =
+                    Config::from_toml(&format!("token = \"t\"\nguild_id = 1\n{key} = \"{bad}\"\n"))
+                        .expect_err("refused")
+                        .to_string();
+                assert!(err.contains(key), "{key} = {bad:?}: {err}");
+                crate::test_support::assert_no_dashes(&err);
+            }
+        }
+    }
+
+    /// `Eq` and not just `PartialEq`: every field is an integer, a bool, a
+    /// string or an `UpDuration`, and `PartialEq` alone reads like a float
+    /// is hiding in there. A compile-time check, so it costs nothing to run.
+    #[test]
+    fn a_config_is_totally_equal_to_itself() {
+        fn assert_eq_impl<T: Eq>() {}
+        assert_eq_impl::<Config>();
     }
 
     #[test]
