@@ -145,6 +145,22 @@ fn worth_saying(message: Option<&str>, last: &mut Option<Complaint>) -> bool {
     true
 }
 
+/// The line to print for a failed `connect`, or `None` when it is the same
+/// failure this loop already said and is still inside [`RESAY`]'s muted
+/// window.
+///
+/// A shepherd that is down fails every attempt the same way, and the loop
+/// retries every [`RECHECK_INTERVAL`], so printing each one would be 120
+/// identical, untimestamped lines an hour. Every failure worth acting on
+/// (a refused handshake) has its own message and exit code before it gets
+/// here, so what is left is "not up yet", and saying it once an hour
+/// loses nothing. A function rather than an inline `eprintln!` so a test
+/// can drive the cadence and the dash check without a socket.
+fn connect_failure_line(err: &Error, last: &mut Option<Complaint>) -> Option<String> {
+    let line = format!("shep-discord: {err}");
+    worth_saying(Some(&line), last).then_some(line)
+}
+
 /// The message printed when the gateway task this loop spawned has ended
 /// on its own, distinguishing a panic from an ordinary return.
 ///
@@ -469,6 +485,10 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // its piece once an hour rather than on every cycle. See
     // `worth_saying`.
     let mut last_config_complaint: Option<Complaint> = None;
+    // The same, for a `connect` that failed. Kept apart from the config
+    // complaint so a good connect does not reset one the other is still
+    // muting. See `connect_failure_line`.
+    let mut last_connect_complaint: Option<Complaint> = None;
     // Whether the boot start below has already had its one turn: it gets
     // exactly one, and the comment at that call site has the why.
     let mut monitor_started = false;
@@ -514,13 +534,20 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
 
         if session.is_none() {
             match connect(socket, identity).await {
-                Ok(live) => session = Some(Arc::new(live)),
+                Ok(live) => {
+                    worth_saying(None, &mut last_connect_complaint);
+                    session = Some(Arc::new(live));
+                }
                 Err(Error::Connect(ConnectError::ProtocolMismatch {
                     daemon_version,
                     message,
                     ..
                 })) => return refused(daemon_version.as_deref(), &message),
-                Err(err) => eprintln!("shep-discord: {err}"),
+                Err(err) => {
+                    if let Some(line) = connect_failure_line(&err, &mut last_connect_complaint) {
+                        eprintln!("{line}");
+                    }
+                }
             }
         }
 
@@ -819,6 +846,43 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    /// A shepherd that is down answers every connect attempt the same way,
+    /// and the loop retries every [`RECHECK_INTERVAL`], so an unthrottled
+    /// line would print 120 times an hour. Once is what the first failure
+    /// gets, a different failure is said at once, and a good connect in
+    /// between makes the same failure worth announcing again.
+    #[test]
+    fn a_shepherd_that_stays_down_is_complained_about_once_not_every_cycle() {
+        let mut last = None;
+        let down = Error::Connect(ConnectError::HandshakeClosed);
+        let line = connect_failure_line(&down, &mut last).expect("the first failure is said");
+        assert_eq!(line, format!("shep-discord: {down}"));
+        assert_no_dashes(&line);
+
+        for cycle in 1..RESAY {
+            assert!(
+                connect_failure_line(&down, &mut last).is_none(),
+                "cycle {cycle} of {RESAY} repeats the same failure"
+            );
+        }
+        assert!(
+            connect_failure_line(&down, &mut last).is_some(),
+            "and the cycle after the window says it again"
+        );
+
+        let other = Error::Request(shep_client::RequestError::Closed);
+        assert!(
+            connect_failure_line(&other, &mut last).is_some(),
+            "a different failure is a different sentence and is said"
+        );
+
+        worth_saying(None, &mut last);
+        assert!(
+            connect_failure_line(&other, &mut last).is_some(),
+            "a failure after a good connect is announced again"
+        );
     }
 
     /// An environment holding exactly one variable, which is the only one
