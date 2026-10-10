@@ -79,22 +79,44 @@ impl fmt::Debug for Redacted {
     }
 }
 
-impl fmt::Debug for Section {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Section")
-            .field("token", &Redacted)
-            .field("guild_id", &self.guild_id)
-            .field("monitor_channel", &self.monitor_channel)
-            .field("monitor_interval", &self.monitor_interval)
-            .field("log_channel", &self.log_channel)
-            .field("err_channel", &self.err_channel)
-            .field("flush", &self.flush)
-            .field("coalesce", &self.coalesce)
-            .field("buffer_lines", &self.buffer_lines)
-            .field("ignore_dogs", &self.ignore_dogs)
-            .finish()
-    }
+/// Writes the hand-rolled `Debug` for a struct that holds the bot token.
+///
+/// `Section` and `Config` carry the same ten fields and need the same
+/// treatment: `token` prints as `<redacted>` and the rest print as they
+/// are. Writing that body out once per type let the two drift, and left
+/// each one free to drop a newly added field from its output without a
+/// compile error. The body lives here once instead.
+///
+/// The macro destructures `self` with no `..`, so a field added to the
+/// struct but not to the list at the call site is a compile error, and the
+/// one that goes missing can no longer be the token. `token` is bound to
+/// `_` and never read, which keeps the redaction in this one place.
+macro_rules! redacted_debug {
+    ($name:ident { token, $($field:ident),+ $(,)? }) => {
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let Self { token: _, $($field),+ } = self;
+                f.debug_struct(stringify!($name))
+                    .field("token", &Redacted)
+                    $(.field(stringify!($field), $field))+
+                    .finish()
+            }
+        }
+    };
 }
+
+redacted_debug!(Section {
+    token,
+    guild_id,
+    monitor_channel,
+    monitor_interval,
+    log_channel,
+    err_channel,
+    flush,
+    coalesce,
+    buffer_lines,
+    ignore_dogs,
+});
 
 /// The resolved settings, with every optional field decided.
 ///
@@ -124,22 +146,18 @@ pub struct Config {
     pub ignore_dogs: bool,
 }
 
-impl fmt::Debug for Config {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Config")
-            .field("token", &Redacted)
-            .field("guild_id", &self.guild_id)
-            .field("monitor_channel", &self.monitor_channel)
-            .field("monitor_interval", &self.monitor_interval)
-            .field("log_channel", &self.log_channel)
-            .field("err_channel", &self.err_channel)
-            .field("flush", &self.flush)
-            .field("coalesce", &self.coalesce)
-            .field("buffer_lines", &self.buffer_lines)
-            .field("ignore_dogs", &self.ignore_dogs)
-            .finish()
-    }
-}
+redacted_debug!(Config {
+    token,
+    guild_id,
+    monitor_channel,
+    monitor_interval,
+    log_channel,
+    err_channel,
+    flush,
+    coalesce,
+    buffer_lines,
+    ignore_dogs,
+});
 
 /// Defaults, named once so `PRINT_CONFIG` and the parser cannot disagree.
 pub const DEFAULT_FLUSH_MS: u64 = 1_000;
