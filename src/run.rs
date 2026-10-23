@@ -37,7 +37,7 @@
 use std::{process::ExitCode, sync::Arc, time::Duration};
 
 use shep_client::{
-    ConnectError, LinkState,
+    ConnectError, LinkState, RequestError,
     dogs::{DogIdentity, DogRuntime, ShepherdError},
     shep_core::paths::ShepPaths,
 };
@@ -159,8 +159,26 @@ fn worth_saying(message: Option<&str>, last: &mut Option<Complaint>) -> bool {
 /// here, so what is left is "not up yet", and saying it once an hour
 /// loses nothing. A function rather than an inline `eprintln!` so a test
 /// can drive the cadence and the dash check without a socket.
-fn connect_failure_line(err: &Error, last: &mut Option<Complaint>) -> Option<String> {
-    let line = format!("shep-discord: {err}");
+///
+/// One failure here is about `dogs.toml` and not about the link: a request
+/// the shepherd answered with a refusal. [`connect`] starts through
+/// `DogRuntime::start`, which reads the section as part of connecting, so a
+/// section the shepherd will not serve (a `{{secret:...}}` it cannot
+/// resolve, or a shepherd too old to resolve one) fails the connect. That
+/// one is worded by [`config_failed_message`] so it names `section`, the
+/// same as any other complaint about the file. It stays a connect failure
+/// rather than reaching [`on_config_failure`], because `start` drops the
+/// connection when the read fails and there is no [`Live`] to carry on
+/// with; the next cycle dials again.
+fn connect_failure_line(
+    section: &str,
+    err: &Error,
+    last: &mut Option<Complaint>,
+) -> Option<String> {
+    let line = match err {
+        Error::Request(RequestError::Rpc(_)) => config_failed_message(section, err),
+        _ => format!("shep-discord: {err}"),
+    };
     worth_saying(Some(&line), last).then_some(line)
 }
 
@@ -522,7 +540,9 @@ pub async fn run(paths: &ShepPaths, identity: &DogIdentity) -> ExitCode {
                     ..
                 })) => return refused(daemon_version.as_deref(), &message),
                 Err(err) => {
-                    if let Some(line) = connect_failure_line(&err, &mut last_connect_complaint) {
+                    if let Some(line) =
+                        connect_failure_line(identity.section(), &err, &mut last_connect_complaint)
+                    {
                         eprintln!("{line}");
                     }
                 }
@@ -640,7 +660,7 @@ pub async fn run(paths: &ShepPaths, identity: &DogIdentity) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use shep_client::{
-        shep_core::protocol::{Request, Response},
+        shep_core::protocol::{Request, Response, RpcError, RpcErrorCode},
         testing,
     };
 
@@ -840,31 +860,61 @@ mod tests {
     fn a_shepherd_that_stays_down_is_complained_about_once_not_every_cycle() {
         let mut last = None;
         let down = Error::Connect(ConnectError::HandshakeClosed);
-        let line = connect_failure_line(&down, &mut last).expect("the first failure is said");
+        let line =
+            connect_failure_line("discord", &down, &mut last).expect("the first failure is said");
         assert_eq!(line, format!("shep-discord: {down}"));
         assert_no_dashes(&line);
 
         for cycle in 1..RESAY {
             assert!(
-                connect_failure_line(&down, &mut last).is_none(),
+                connect_failure_line("discord", &down, &mut last).is_none(),
                 "cycle {cycle} of {RESAY} repeats the same failure"
             );
         }
         assert!(
-            connect_failure_line(&down, &mut last).is_some(),
+            connect_failure_line("discord", &down, &mut last).is_some(),
             "and the cycle after the window says it again"
         );
 
         let other = Error::Request(shep_client::RequestError::Closed);
         assert!(
-            connect_failure_line(&other, &mut last).is_some(),
+            connect_failure_line("discord", &other, &mut last).is_some(),
             "a different failure is a different sentence and is said"
         );
 
         worth_saying(None, &mut last);
         assert!(
-            connect_failure_line(&other, &mut last).is_some(),
+            connect_failure_line("discord", &other, &mut last).is_some(),
             "a failure after a good connect is announced again"
+        );
+    }
+
+    /// `DogRuntime::start` reads the section as part of connecting, so a
+    /// section the shepherd refuses (a `{{secret:...}}` it cannot resolve,
+    /// or a shepherd too old to resolve one) arrives as a failed connect.
+    /// The operator has to hear which section it was, as for any other
+    /// config complaint; a bare RPC error sends them looking at the
+    /// shepherd instead of at `dogs.toml`.
+    #[test]
+    fn a_section_the_shepherd_refuses_to_serve_is_named_in_the_complaint() {
+        let refused = Error::Request(shep_client::RequestError::Rpc(RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: "the shepherd is too old to resolve secret references".to_owned(),
+            daemon_version: None,
+        }));
+        let mut last = None;
+
+        let line = connect_failure_line("chatter", &refused, &mut last).expect("said");
+
+        assert_eq!(line, config_failed_message("chatter", &refused));
+        assert!(line.contains("[chatter] in dogs.toml"), "{line}");
+        assert_no_dashes(&line);
+
+        let down = Error::Request(shep_client::RequestError::Closed);
+        let line = connect_failure_line("chatter", &down, &mut last).expect("said");
+        assert!(
+            !line.contains("dogs.toml"),
+            "a closed link is not a config fault: {line}"
         );
     }
 
