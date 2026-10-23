@@ -32,9 +32,9 @@
 //! # How it learns its own name
 //!
 //! Two names, from two places, and conflating them is a mistake worth its
-//! own type. [`run::Identity`] holds both and its module doc has the
-//! argument; `main`'s part is reading them out of the environment once,
-//! here, where the environment is read at all.
+//! own type. [`shep_client::dogs::DogIdentity`] holds both and [`run`]'s
+//! module doc has the argument; `main`'s part is reading them out of the
+//! environment once, here, where the environment is read at all.
 
 #![forbid(unsafe_code)]
 
@@ -55,9 +55,9 @@ mod wiring;
 
 use std::{path::PathBuf, process::ExitCode};
 
-use shep_client::shep_core::paths::ShepPaths;
+use shep_client::{dogs::DogIdentity, shep_core::paths::ShepPaths};
 
-use crate::{cli::Action, run::Identity};
+use crate::cli::Action;
 
 /// The message printed when neither `$HOME` nor `$SHEP_HOME` is set.
 ///
@@ -120,7 +120,7 @@ fn main() -> ExitCode {
     // Settled here, once `env` exists, rather than wherever first needs it:
     // it comes out of the environment shep spawned this process with, and
     // that answer cannot change while this process runs.
-    let identity = Identity::from_env(env);
+    let identity = DogIdentity::from_env(&env, run::DEFAULT_NAME);
 
     // Built by hand rather than through `#[tokio::main]`: a runtime this
     // crate drops still waits for every task it spawned, and shutting it
@@ -136,7 +136,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let code = runtime.block_on(run::run(&paths.socket, &identity));
+    let code = runtime.block_on(run::run(&paths, &identity));
     runtime.shutdown_background();
     code
 }

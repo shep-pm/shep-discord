@@ -155,7 +155,9 @@ fn lambs_value(lambs: &[Lamb]) -> String {
 fn dog_value(dog: &DogSource) -> String {
     match dog {
         DogSource::BuiltIn => "built in".to_owned(),
-        DogSource::Adopted { path, .. } => limits::fit(&format!("adopted: {path}"), FIELD_VALUE_LIMIT),
+        DogSource::Adopted { path, .. } => {
+            limits::fit(&format!("adopted: {path}"), FIELD_VALUE_LIMIT)
+        }
         // `DogSource` is `#[non_exhaustive]`: a future variant renders here
         // rather than failing to compile against an older shep-client.
         _ => "unknown".to_owned(),
