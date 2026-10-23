@@ -12,8 +12,7 @@
 //!
 //! # How it learns its own name
 //!
-//! Two names, from two places, and conflating them is a mistake worth its
-//! own type. See [`Identity`].
+//! Two names, from two places, and [`DogIdentity`] keeps them apart.
 //!
 //! The handshake name is what goes in the `Hello` frame, and it comes from
 //! `$SHEP_DOG_NAME` and from nowhere else. shep sets it in the environment
@@ -29,15 +28,19 @@
 //!
 //! The config name is the `[<name>]` key the settings live under in
 //! `dogs.toml`. Getting that one wrong is silent in its own way: the daemon
-//! answers `DogConfig` for a name nobody adopted with an empty section,
-//! which is byte for byte what a dog running on its defaults gets. It is
-//! the handshake name whenever there is one, and [`DEFAULT_NAME`] when
-//! there is not, because somebody running this binary by hand still wants
-//! their `dogs.toml` read.
+//! answers a section request for a name nobody adopted with an empty
+//! section, which is byte for byte what a dog running on its defaults gets.
+//! It is the handshake name whenever there is one, and [`DEFAULT_NAME`]
+//! when there is not, because somebody running this binary by hand still
+//! wants their `dogs.toml` read.
 
-use std::{path::Path, process::ExitCode, sync::Arc, time::Duration};
+use std::{process::ExitCode, sync::Arc, time::Duration};
 
-use shep_client::{ConnectError, LinkState, ReconnectingClient};
+use shep_client::{
+    ConnectError, LinkState, RequestError,
+    dogs::{DogIdentity, DogRuntime, ShepherdError},
+    shep_core::paths::ShepPaths,
+};
 
 use crate::{
     bot, config,
@@ -53,9 +56,9 @@ use crate::{
 /// hand.
 ///
 /// A config-section default only. It is never announced in the handshake:
-/// see [`Identity`] for why the two names part company here rather than
+/// see the module doc for why the two names part company here rather than
 /// sharing one fallback.
-const DEFAULT_NAME: &str = "discord";
+pub const DEFAULT_NAME: &str = "discord";
 
 /// The message printed when nothing adopted this process.
 ///
@@ -156,8 +159,26 @@ fn worth_saying(message: Option<&str>, last: &mut Option<Complaint>) -> bool {
 /// here, so what is left is "not up yet", and saying it once an hour
 /// loses nothing. A function rather than an inline `eprintln!` so a test
 /// can drive the cadence and the dash check without a socket.
-fn connect_failure_line(err: &Error, last: &mut Option<Complaint>) -> Option<String> {
-    let line = format!("shep-discord: {err}");
+///
+/// One failure here is about `dogs.toml` and not about the link: a request
+/// the shepherd answered with a refusal. [`connect`] starts through
+/// `DogRuntime::start`, which reads the section as part of connecting, so a
+/// section the shepherd will not serve (a `{{secret:...}}` it cannot
+/// resolve, or a shepherd too old to resolve one) fails the connect. That
+/// one is worded by [`config_failed_message`] so it names `section`, the
+/// same as any other complaint about the file. It stays a connect failure
+/// rather than reaching [`on_config_failure`], because `start` drops the
+/// connection when the read fails and there is no [`Live`] to carry on
+/// with; the next cycle dials again.
+fn connect_failure_line(
+    section: &str,
+    err: &Error,
+    last: &mut Option<Complaint>,
+) -> Option<String> {
+    let line = match err {
+        Error::Request(RequestError::Rpc(_)) => config_failed_message(section, err),
+        _ => format!("shep-discord: {err}"),
+    };
     worth_saying(Some(&line), last).then_some(line)
 }
 
@@ -184,57 +205,32 @@ fn gateway_ended_message(outcome: &Result<(), tokio::task::JoinError>) -> String
     }
 }
 
-/// The two names this dog needs, and the two different places they come
-/// from.
+/// Connect as `identity` and ask for its section, through
+/// [`DogRuntime::start`], the start every other shep dog takes.
 ///
-/// Separate fields rather than one string, because they answer different
-/// questions and only one of them may be guessed at. The module docs have
-/// the argument; this type is what stops the code drifting back to one
-/// name for both.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Identity {
-    /// What to announce in the `Hello` frame, or `None` for a process no
-    /// shepherd spawned.
-    ///
-    /// Never falls back to [`DEFAULT_NAME`]. A name the daemon did not hand
-    /// out is a name it will act on anyway: a refused handshake is recorded
-    /// against whatever the frame said, so an invented one asks the daemon
-    /// to restart a dog that is running perfectly well.
-    handshake: Option<String>,
-    /// The `[<name>]` section to read out of `dogs.toml`.
-    section: String,
-}
-
-impl Identity {
-    /// Read both names out of the environment.
-    ///
-    /// Takes a lookup rather than reading [`std::env::var`] itself. The
-    /// environment is a process-wide mutable global, and a test that sets
-    /// one variable to check the absent case is a test that races every
-    /// other test in the binary.
-    ///
-    /// An empty `$SHEP_DOG_NAME` reads as unset. It cannot be a real dog:
-    /// `[]` is not a section anybody can write, and an empty name in a
-    /// `Hello` frame is a handshake the daemon cannot attribute either.
-    pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Self {
-        let handshake = env("SHEP_DOG_NAME").filter(|name| !name.is_empty());
-        let section = handshake.clone().unwrap_or_else(|| DEFAULT_NAME.to_owned());
-        Self { handshake, section }
-    }
-}
-
-/// Connect, announcing the handshake name when there is one.
+/// The handshake name is settled once, before the loop starts, rather than
+/// looked up per connection: it comes out of the environment shep spawned
+/// this process with, and a shepherd that restarted underneath the dog did
+/// not reach into that environment and rewrite it.
 ///
-/// The name is settled once, before the loop starts, rather than looked up
-/// per connection: it comes out of the environment shep spawned this
-/// process with, and a shepherd that restarted underneath the dog did not
-/// reach into that environment and rewrite it.
-async fn connect(socket: &Path, identity: &Identity) -> Result<Live, Error> {
-    let client = match &identity.handshake {
-        Some(name) => ReconnectingClient::connect_as_dog(socket, name).await?,
-        None => ReconnectingClient::connect(socket).await?,
-    };
-    Ok(Live::new(client))
+/// Only the connection is kept. The section `start` fetched is dropped
+/// and the loop reads it again through [`Live::section`], so the first
+/// cycle and every later one share one read path; the cost is one extra
+/// request per connect.
+async fn connect(paths: &ShepPaths, identity: &DogIdentity) -> Result<Live, Error> {
+    let runtime = DogRuntime::start(identity.clone(), paths.clone())
+        .await
+        .map_err(|err| match err {
+            ShepherdError::Connect(err) => Error::Connect(err),
+            ShepherdError::Request(err) => Error::Request(err),
+            // `start` documents only the two above, and `ShepherdError`
+            // is `#[non_exhaustive]`.
+            other => Error::Unexpected {
+                asked: "a started dog runtime".to_owned(),
+                got: other.to_string(),
+            },
+        })?;
+    Ok(Live::new(runtime.into_client()))
 }
 
 /// The exit code a refused handshake ends this process on.
@@ -443,7 +439,7 @@ pub const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 ///   not a stop this dog was asked for.
 /// - **A second, fully independent shepherd connection for the gateway
 ///   side,** each with its own reconnect loop, rather than sharing this
-///   one. Rejected as needless: [`Live`] wraps a [`ReconnectingClient`],
+///   one. Rejected as needless: [`Live`] wraps a `ReconnectingClient`,
 ///   which is itself already safe to share behind `&self`, and a second
 ///   socket to the same shepherd would double the handshake traffic for
 ///   no isolation this dog actually needs, since a refused handshake on
@@ -467,7 +463,7 @@ pub const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// on the streaming and monitor sides as it already does on the gateway
 /// one. What it buys is the rate-limit state those clients carry; see
 /// [`Wiring`] itself.
-pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
+pub async fn run(paths: &ShepPaths, identity: &DogIdentity) -> ExitCode {
     let mut stop = Stop::on_ctrl_c();
     let mut session: Option<Arc<Live>> = None;
     // Owned here rather than behind a process-global inside `stream_once`,
@@ -508,7 +504,7 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
     // who edits `token` or `monitor_channel`.
     let mut wiring: Option<Wiring> = None;
 
-    if identity.handshake.is_none() {
+    if identity.handshake().is_none() {
         // Once, before the loop, rather than per connection: the answer
         // cannot change while this process runs, and a dog whose socket is
         // not up yet would otherwise print it on every retry.
@@ -518,7 +514,7 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
         // stripped the environment between `shep adopt` and this process,
         // and the daemon is about to call this dog silent and stop
         // restarting it.
-        eprintln!("{}", unadopted_message(&identity.section));
+        eprintln!("{}", unadopted_message(identity.section()));
     }
 
     loop {
@@ -533,7 +529,7 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
         }
 
         if session.is_none() {
-            match connect(socket, identity).await {
+            match connect(paths, identity).await {
                 Ok(live) => {
                     worth_saying(None, &mut last_connect_complaint);
                     session = Some(Arc::new(live));
@@ -544,7 +540,9 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                     ..
                 })) => return refused(daemon_version.as_deref(), &message),
                 Err(err) => {
-                    if let Some(line) = connect_failure_line(&err, &mut last_connect_complaint) {
+                    if let Some(line) =
+                        connect_failure_line(identity.section(), &err, &mut last_connect_complaint)
+                    {
                         eprintln!("{line}");
                     }
                 }
@@ -564,7 +562,7 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
             }
 
             match live
-                .section(&identity.section)
+                .section(identity.section())
                 .await
                 .and_then(|toml| config::Config::from_toml(&toml))
             {
@@ -627,7 +625,7 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                         || config.err_channel.is_some()
                         || config.monitor_channel.is_some()
                     {
-                        let handshake = identity.handshake.as_deref();
+                        let handshake = identity.handshake();
                         if let Err(err) = session::stream_once(
                             live,
                             handshake,
@@ -645,7 +643,7 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
                 }
                 Err(err) => {
                     if let Some(code) =
-                        on_config_failure(&identity.section, &err, &mut last_config_complaint)
+                        on_config_failure(identity.section(), &err, &mut last_config_complaint)
                     {
                         return code;
                     }
@@ -661,6 +659,11 @@ pub async fn run(socket: &Path, identity: &Identity) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use shep_client::{
+        shep_core::protocol::{Request, Response, RpcError, RpcErrorCode},
+        testing,
+    };
+
     use super::*;
     use crate::test_support::assert_no_dashes;
 
@@ -837,7 +840,7 @@ mod tests {
             Error::Request(shep_client::RequestError::Closed),
             Error::Connect(ConnectError::HandshakeClosed),
             Error::Unexpected {
-                asked: "a DogConfig".to_owned(),
+                asked: "a DogSection".to_owned(),
                 got: "a Pong".to_owned(),
             },
         ] {
@@ -857,53 +860,107 @@ mod tests {
     fn a_shepherd_that_stays_down_is_complained_about_once_not_every_cycle() {
         let mut last = None;
         let down = Error::Connect(ConnectError::HandshakeClosed);
-        let line = connect_failure_line(&down, &mut last).expect("the first failure is said");
+        let line =
+            connect_failure_line("discord", &down, &mut last).expect("the first failure is said");
         assert_eq!(line, format!("shep-discord: {down}"));
         assert_no_dashes(&line);
 
         for cycle in 1..RESAY {
             assert!(
-                connect_failure_line(&down, &mut last).is_none(),
+                connect_failure_line("discord", &down, &mut last).is_none(),
                 "cycle {cycle} of {RESAY} repeats the same failure"
             );
         }
         assert!(
-            connect_failure_line(&down, &mut last).is_some(),
+            connect_failure_line("discord", &down, &mut last).is_some(),
             "and the cycle after the window says it again"
         );
 
         let other = Error::Request(shep_client::RequestError::Closed);
         assert!(
-            connect_failure_line(&other, &mut last).is_some(),
+            connect_failure_line("discord", &other, &mut last).is_some(),
             "a different failure is a different sentence and is said"
         );
 
         worth_saying(None, &mut last);
         assert!(
-            connect_failure_line(&other, &mut last).is_some(),
+            connect_failure_line("discord", &other, &mut last).is_some(),
             "a failure after a good connect is announced again"
         );
     }
 
-    /// An environment holding exactly one variable, which is the only one
-    /// [`Identity::from_env`] reads.
-    fn only(key: &str, value: &str) -> impl Fn(&str) -> Option<String> {
-        let (key, value) = (key.to_owned(), value.to_owned());
-        move |asked| (asked == key).then(|| value.clone())
+    /// `DogRuntime::start` reads the section as part of connecting, so a
+    /// section the shepherd refuses (a `{{secret:...}}` it cannot resolve,
+    /// or a shepherd too old to resolve one) arrives as a failed connect.
+    /// The operator has to hear which section it was, as for any other
+    /// config complaint; a bare RPC error sends them looking at the
+    /// shepherd instead of at `dogs.toml`.
+    #[test]
+    fn a_section_the_shepherd_refuses_to_serve_is_named_in_the_complaint() {
+        let refused = Error::Request(shep_client::RequestError::Rpc(RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: "the shepherd is too old to resolve secret references".to_owned(),
+            daemon_version: None,
+        }));
+        let mut last = None;
+
+        let line = connect_failure_line("chatter", &refused, &mut last).expect("said");
+
+        assert_eq!(line, config_failed_message("chatter", &refused));
+        assert!(line.contains("[chatter] in dogs.toml"), "{line}");
+        assert_no_dashes(&line);
+
+        let down = Error::Request(shep_client::RequestError::Closed);
+        let line = connect_failure_line("chatter", &down, &mut last).expect("said");
+        assert!(
+            !line.contains("dogs.toml"),
+            "a closed link is not a config fault: {line}"
+        );
     }
 
-    #[test]
-    fn the_dog_takes_both_names_from_shep_dog_name() {
-        let identity = Identity::from_env(only("SHEP_DOG_NAME", "chatter"));
-        assert_eq!(identity.handshake.as_deref(), Some("chatter"));
-        assert_eq!(identity.section, "chatter");
+    /// A layout whose socket is where the fake shepherd bound.
+    fn paths_in(dir: &std::path::Path) -> ShepPaths {
+        let mut paths = ShepPaths::resolve(&|_| None, dir);
+        paths.socket = testing::control_address(dir);
+        paths
     }
 
+    /// The first thing a started dog asks is its own section, by its own
+    /// name and with secrets resolved. This is the seam `DogRuntime`
+    /// owns, so it is read off the wire the fake shepherd sees rather than
+    /// off `DogRuntime`'s internals.
+    #[tokio::test]
+    async fn connecting_asks_for_the_resolved_section_under_the_dogs_own_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = paths_in(dir.path());
+        let mut envelopes =
+            testing::fake_daemon_answering_with_ack(&paths.socket, testing::sample_ack(), |_| {
+                Response::DogSection {
+                    toml: "token = \"resolved-bot-token\"\n".to_owned().into(),
+                }
+            })
+            .await;
+
+        connect(&paths, &DogIdentity::named("chatter"))
+            .await
+            .expect("connected");
+
+        let asked = envelopes.recv().await.expect("the dog asked something");
+        assert_eq!(
+            asked.body,
+            Request::DogConfigResolved {
+                name: "chatter".to_owned()
+            }
+        );
+    }
+
+    /// The name a section falls back to has to be the one `PRINT_CONFIG`,
+    /// the README and every message say.
     #[test]
-    fn without_shep_dog_name_the_dog_names_itself_to_nobody() {
-        let identity = Identity::from_env(|_| None);
-        assert_eq!(identity.handshake, None);
-        assert_eq!(identity.section, DEFAULT_NAME);
+    fn an_unadopted_dog_reads_the_discord_section_and_announces_nothing() {
+        let identity = DogIdentity::from_env(&|_| None, DEFAULT_NAME);
+        assert_eq!(identity.handshake(), None);
+        assert_eq!(identity.section(), "discord");
     }
 
     /// A panicked gateway task is told apart from one that simply

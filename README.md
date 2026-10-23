@@ -76,7 +76,7 @@ guild_id = 123456789012345678
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `token` | none, required | The Discord bot token. This is a secret: `--schema` marks it, and `shep lookout`'s config pane masks it. Never logged; `Config`'s own `Debug` prints `<redacted>` in its place. |
+| `token` | none, required | The Discord bot token. This is a secret: `--schema` marks it, and `shep lookout`'s config pane masks it. Never logged; `Config`'s own `Debug` prints `<redacted>` in its place. It can be a `{{secret:...}}` reference, which the shepherd resolves before this dog reads the section (shep 0.16 and later). |
 | `guild_id` | none, required | The guild (server) this bot serves. A Discord snowflake, so `0` is refused rather than a real value. |
 | `monitor_channel` | unset | Channel for the live monitor. Unset disables it. |
 | `monitor_interval` | unset | How often the monitor refreshes, e.g. `"1m"`. Unset means the monitor does not start on boot; `/monitor start` can still start it for the rest of the process's life. A value under 15 seconds is raised to that floor rather than refused. |
