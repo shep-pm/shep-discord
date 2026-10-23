@@ -101,10 +101,10 @@ own file is not a split.
   no `#[shep(secret)]` takes the wrong order in silence. Read the order
   rather than trusting rustc to read it for you. The older floor still
   holds underneath: `Request::HostUsage` (what `/system` answers from)
-  arrived in 0.8.2 and is absent from 0.7.4 and from 0.8.0. That raises
-  the protocol this dog announces from 8 to 9, which does not lock out an
-  older shepherd: a shepherd accepts any peer at
-  or above its own `MIN_SUPPORTED`, still 8. What it does mean is a
+  arrived in 0.8.2 and is absent from 0.7.4 and from 0.8.0. That raised
+  the protocol this dog announces from 8 to 9, and shep-client 0.16.1
+  announces 11. Neither locks out an older shepherd: a shepherd accepts any
+  peer at or above its own `MIN_SUPPORTED`, still 8. What it does mean is a
   shepherd too old to know `HostUsage` answers `/system` with an error
   instead of an embed.
 

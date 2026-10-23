@@ -28,7 +28,8 @@ exclude = ["/docs/"]
 # the `schema` feature forwards down to shep-core so `MemSize` and
 # `UpDuration` carry their `JsonSchema` impls; and the protocol number a dog
 # announces has to be at or above the shepherd's `MIN_SUPPORTED`, which
-# announcing 9 clears.
+# announcing 11, shep-core 0.16.1's `PROTOCOL_VERSION`, clears (`MIN_SUPPORTED`
+# is still 8).
 shep-client = "0.16.1"
 # `#[derive(JsonSchema)]` expands to absolute `schemars::` paths, so the
 # crate has to be nameable here even though shep-client carries it.

@@ -27,18 +27,19 @@ jobs:
           # PR_TITLE), which this job does not see. Unlike the local hook,
           # fixup!/squash!/amend! markers are refused here: unsquashed, they
           # parse as nothing.
+          # One sha at a time rather than one `git log` read line by line, so
+          # an empty subject is a commit that gets refused and not a blank
+          # line that gets skipped.
           bad=0
-          while IFS= read -r subject; do
-            [ -z "$subject" ] && continue
+          for sha in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            subject=$(git log -1 --format='%s' "$sha")
             if printf '%s' "$subject" | grep -qE '^(feat|fix|perf|refactor|docs|test|ci|chore|style)(\([^()]+\))?!?: .+'; then
               printf '  ok       %s\n' "$subject"
             else
               printf '  REFUSED  %s\n' "$subject"
               bad=$((bad + 1))
             fi
-          done <<EOF
-          $(git log --no-merges --format='%s' "$BASE..$HEAD")
-          EOF
+          done
           if [ "$bad" -gt 0 ]; then
             echo "::error::$bad commit subject(s) above are not conventional. Rewrite them as: type(optional-scope): lowercase summary"
             exit 1
