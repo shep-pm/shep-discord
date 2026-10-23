@@ -123,18 +123,17 @@ impl Live {
     /// Empty when `dogs.toml` has no such section, which is the ordinary
     /// case for a dog running on its defaults.
     ///
+    /// Goes through [`ReconnectingClient::dog_config`], which asks for the
+    /// section with every `{{secret:...}}` resolved, the same way
+    /// `DogRuntime::start` does for the first read. A plain `DogConfig`
+    /// here would hand a later re-read the literal reference where the
+    /// first read got the bot token.
+    ///
     /// # Errors
-    /// [`Error::Connect`] or [`Error::Request`] if the shepherd cannot be
-    /// reached or refuses, and [`Error::Unexpected`] if it answers with
-    /// something other than a dog section.
+    /// [`Error::Request`] if the shepherd cannot be reached, refuses, or
+    /// answers with something other than a dog section.
     pub async fn section(&self, name: &str) -> Result<String, Error> {
-        let asked = Request::DogConfig {
-            name: name.to_owned(),
-        };
-        match self.0.request(asked).await? {
-            Response::DogSection { toml } => Ok(toml.as_str().to_owned()),
-            other => Err(unexpected("a DogSection", &other)),
-        }
+        Ok(self.0.dog_config(name).await?.as_str().to_owned())
     }
 
     /// Every supervised entry, dogs included.
@@ -527,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn section_reads_the_dog_config_toml() {
         let (live, mut fake) = test_live().await;
-        fake.expect(Request::DogConfig {
+        fake.expect(Request::DogConfigResolved {
             name: "discord".to_owned(),
         })
         .answer(Response::DogSection {
@@ -535,6 +534,30 @@ mod tests {
         });
         let toml = live.section("discord").await.expect("ok");
         assert_eq!(toml, "flush = \"1s\"\n");
+    }
+
+    /// The shepherd resolves a `{{secret:...}}` only for a request that
+    /// asks for it, so the request is what carries the guarantee: the fake
+    /// answers what the shepherd would, the resolved text, and only to
+    /// `DogConfigResolved`. A re-read through the plain `DogConfig` would
+    /// hand the dog the literal reference as its bot token.
+    #[tokio::test]
+    async fn a_secret_bot_token_reaches_the_dog_resolved() {
+        let (live, mut fake) = test_live().await;
+        fake.expect(Request::DogConfigResolved {
+            name: "discord".to_owned(),
+        })
+        .answer(Response::DogSection {
+            toml: "token = \"resolved-bot-token\"\nguild_id = 1\n"
+                .to_owned()
+                .into(),
+        });
+
+        let toml = live.section("discord").await.expect("ok");
+        let config = crate::config::Config::from_toml(&toml).expect("a complete section");
+
+        assert_eq!(config.token, "resolved-bot-token");
+        assert!(!toml.contains("{{secret:"), "{toml}");
     }
 
     #[tokio::test]

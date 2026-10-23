@@ -420,6 +420,7 @@ pub fn worst_case_sample(id: u32) -> ProcessInfo {
         .smit(Some("s".repeat(2_000)))
         .dog(Some(DogSource::Adopted {
             path: "p".repeat(2_000),
+            channel: false,
         }))
         .dog_stale(Some(true))
         .build()

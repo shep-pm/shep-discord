@@ -155,7 +155,7 @@ fn lambs_value(lambs: &[Lamb]) -> String {
 fn dog_value(dog: &DogSource) -> String {
     match dog {
         DogSource::BuiltIn => "built in".to_owned(),
-        DogSource::Adopted { path } => limits::fit(&format!("adopted: {path}"), FIELD_VALUE_LIMIT),
+        DogSource::Adopted { path, .. } => limits::fit(&format!("adopted: {path}"), FIELD_VALUE_LIMIT),
         // `DogSource` is `#[non_exhaustive]`: a future variant renders here
         // rather than failing to compile against an older shep-client.
         _ => "unknown".to_owned(),
@@ -458,6 +458,7 @@ mod tests {
         let adopted = ProcessInfo::builder(1, "web", ProcStatus::Online)
             .dog(Some(DogSource::Adopted {
                 path: "/usr/local/bin/watchdog".to_owned(),
+                channel: false,
             }))
             .build();
 
@@ -524,6 +525,7 @@ mod tests {
         worst.smit = Some("s".repeat(2_000));
         worst.dog = Some(DogSource::Adopted {
             path: "p".repeat(2_000),
+            channel: false,
         });
         worst.dog_stale = Some(true);
 
