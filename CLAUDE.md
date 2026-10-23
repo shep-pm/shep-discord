@@ -88,7 +88,8 @@ own file is not a split.
   default; `config.rs`'s own round-trip test is the check.
 - `shep-client` comes by version from crates.io and is the only path to
   shep-core: `shep_client::shep_core`, never a second direct dependency. The
-  floor is 0.10.0, because the `DogConfig` derive is gone from it. The
+  floor is 0.16.1: `DogRuntime` and `Client::dog_config` (secrets resolved)
+  are there, and the `DogConfig` derive is long gone from it. The
   `dog_config` attribute replaced it, and `#[dog_config]` goes ABOVE the
   `#[derive(...)]` line on `config::Section`. rustc expands the attributes
   above an attribute macro before running it, so a `JsonSchema` derive
@@ -106,6 +107,13 @@ own file is not a split.
   or above its own `MIN_SUPPORTED`, still 8. What it does mean is a
   shepherd too old to know `HostUsage` answers `/system` with an error
   instead of an embed.
+
+## Commits
+
+- Conventional subjects, `type(scope): summary`, types `feat` `fix` `perf`
+  `refactor` `docs` `test` `ci` `chore` `style`. `.githooks/commit-msg`
+  checks locally (`git config core.hooksPath .githooks` once per clone) and
+  `.github/workflows/commits.yml` fails a pull request carrying any other.
 
 ## Style
 
