@@ -36,6 +36,12 @@ jobs:
     # A ceiling against a hang, not a performance budget. GitHub's default
     # when absent is 360.
     timeout-minutes: 30
+    # Read by the `binaries` job below. Both are empty unless release-plz
+    # released something this run, which is most runs.
+    outputs:
+      released: ${{ steps.release.outputs.releases_created }}
+      # One package in this repository, so the first release is the only one.
+      tag: ${{ steps.release.outputs.releases_created == 'true' && fromJSON(steps.release.outputs.releases)[0].tag || '' }}
     steps:
       # Every action in these two files is pinned by commit, unlike test.yml's,
       # which use moving tags. These jobs hold RELEASE_PLZ_TOKEN and
@@ -67,8 +73,39 @@ jobs:
 
       # Same commit pin as release-plz-pr.yml, for the same reason.
       - uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
+        id: release
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Builds the bare binary for every target shep ships for, attaches each to
+  # the release release-plz just made, and opens the pull request on
+  # shep-pm/shep that puts their hashes in the dogs index, which is what lets
+  # `shep install` download a binary rather than build one.
+  #
+  # This is a job here and not a `release: published` workflow because
+  # release-plz creates the release with a token, and a release created that
+  # way fires no event for another workflow to catch. `needs` plus the `if`
+  # below is the trigger: it runs only when release-plz released this run.
+  binaries:
+    name: Prebuilt binaries
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.released == 'true'
+    # What dog-release.yml asks of its caller; a called workflow cannot hold
+    # more than the job that calls it grants.
+    permissions:
+      contents: write
+      actions: read
+    # Pinned by commit, as dog-release.yml's own docs ask: it runs with this
+    # job's write access and the index token, so a ref that can move would let
+    # a later change to it run with both. Move the sha when you choose to.
+    uses: shep-pm/shep/.github/workflows/dog-release.yml@3e217f93ea0e7557b10bb3cdf45cd0755365cbb9
+    with:
+      package: shep-discord
+      tag: ${{ needs.release-plz-release.outputs.tag }}
+    secrets:
+      # A token that can push a branch and open a pull request on shep-pm/shep.
+      # Must be added to this repository's secrets.
+      index-token: ${{ secrets.SHEP_INDEX_TOKEN }}
