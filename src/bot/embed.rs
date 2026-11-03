@@ -154,7 +154,7 @@ fn lambs_value(lambs: &[Lamb]) -> String {
 /// unbounded as a sheep's own name.
 fn dog_value(dog: &DogSource) -> String {
     match dog {
-        DogSource::BuiltIn => "built in".to_owned(),
+        DogSource::BuiltIn { .. } => "built in".to_owned(),
         DogSource::Adopted { path, .. } => {
             limits::fit(&format!("adopted: {path}"), FIELD_VALUE_LIMIT)
         }
@@ -453,7 +453,7 @@ mod tests {
             .lambs(Some(vec![Lamb::new(2, "child")]))
             .fold(Some("main".to_owned()))
             .smit(Some("smit".to_owned()))
-            .dog(Some(DogSource::BuiltIn))
+            .dog(Some(DogSource::BuiltIn { grants: None }))
             .dog_stale(Some(true))
             .build();
 
@@ -461,6 +461,7 @@ mod tests {
             .dog(Some(DogSource::Adopted {
                 path: "/usr/local/bin/watchdog".to_owned(),
                 channel: false,
+                grants: None,
             }))
             .build();
 
@@ -528,6 +529,7 @@ mod tests {
         worst.dog = Some(DogSource::Adopted {
             path: "p".repeat(2_000),
             channel: false,
+            grants: None,
         });
         worst.dog_stale = Some(true);
 
