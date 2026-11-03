@@ -18,19 +18,19 @@ exclude = ["/docs/"]
 
 [dependencies]
 # The only path to shep-core: `shep_client::shep_core`, never a second
-# direct dependency. 0.16.1 is the floor for two reasons. `DogRuntime`, which
-# every other dog starts on, and `Client::dog_config`, which asks for the
-# section with `{{secret:...}}` references resolved so the bot token can be
-# one, are both there. The older floors hold underneath, each one cleared by
-# this version: the `dog_config` attribute (0.10.0) replaced the `DogConfig`
-# derive and is what puts `x-shep-secret` on the field rather than on its
-# name; `Request::HostUsage`, which `/system` is built on, arrived in 0.8.2;
-# the `schema` feature forwards down to shep-core so `MemSize` and
-# `UpDuration` carry their `JsonSchema` impls; and the protocol number a dog
-# announces has to be at or above the shepherd's `MIN_SUPPORTED`, which
-# announcing 11, shep-core 0.16.1's `PROTOCOL_VERSION`, clears (`MIN_SUPPORTED`
-# is still 8).
-shep-client = "0.16.1"
+# direct dependency. 0.23.0 is the version this dog is built and tested
+# against. The floors under it still hold, each one cleared by this version:
+# `DogRuntime`, which every other dog starts on, and `Client::dog_config`,
+# which asks for the section with `{{secret:...}}` references resolved so the
+# bot token can be one, arrived in 0.16.1; the `dog_config` attribute (0.10.0)
+# replaced the `DogConfig` derive and is what puts `x-shep-secret` on the
+# field rather than on its name; `Request::HostUsage`, which `/system` is
+# built on, arrived in 0.8.2; the `schema` feature forwards down to shep-core
+# so `MemSize` and `UpDuration` carry their `JsonSchema` impls; and the
+# protocol number a dog announces has to be at or above the shepherd's
+# `MIN_SUPPORTED`, which announcing 15, shep-core 0.23.0's `PROTOCOL_VERSION`,
+# clears (`MIN_SUPPORTED` is still 8).
+shep-client = "0.23.0"
 # `#[derive(JsonSchema)]` expands to absolute `schemars::` paths, so the
 # crate has to be nameable here even though shep-client carries it.
 schemars = { version = "1.2.2", default-features = false, features = ["derive", "std"] }
@@ -43,7 +43,7 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "builder", "rustls_backend"] }
 
 [dev-dependencies]
-shep-client = { version = "0.16.1", features = ["test-support"] }
+shep-client = { version = "0.23.0", features = ["test-support"] }
 serde_json = "1"
 tempfile = "3"
 
