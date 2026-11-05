@@ -42,11 +42,20 @@ shep adopt shep-discord
 the shepherd supervises it like anything else in the flock, and `shep dogs`
 lists it.
 
-Adopting also asks the binary two questions and reads the answers off its
-stdout, before it opens a socket or a file. `--version` gives the build and
-the wire protocol it speaks; a dog below the shepherd's floor is refused
-right there. `--schema` gives a JSON Schema for the settings below, which is
-what `shep lookout` draws its config pane from.
+Adopting also asks the binary for its manifest, before it opens a socket or a
+file. That gives the build and the wire protocol it speaks; a dog below the
+shepherd's floor is refused right there. It also gives a JSON Schema for the
+settings below, which is what `shep lookout` draws its config pane from, and
+the permissions `shep adopt` asks you to grant.
+
+| Permission | Required | What it's for |
+| --- | --- | --- |
+| `flock.read` | yes | the monitor and the slash commands |
+| `events:log.` | yes | streaming each sheep's output |
+| `events:process.` | yes | following sheep as they start, stop and exit |
+| `flock.control` | no | stop, restart, reload and save from a slash command |
+| `flock.edit` | no | delete from a slash command |
+| `logs.manage` | no | flush and reopen from a slash command |
 
 The name it is adopted under is the name shep hands it in `$SHEP_DOG_NAME`,
 and it is also the config key: `dogs.toml` reads `[discord]`. Running the

@@ -13,11 +13,11 @@
 //! # The two questions shep asks the binary
 //!
 //! Before anything else runs, there is a probe. `shep adopt` spawns this
-//! binary with `--version`, reads the build and the `PROTOCOL_VERSION` it
-//! was compiled against, and refuses a dog below its own floor; then with
-//! `--schema`, and reads a JSON Schema for the `[discord]` section, which is
-//! what lookout draws a settings pane from. Both are answered by
-//! [`shep_client::dogs::probe`], from [`config::Section`]'s own
+//! binary with `--shep-manifest` and reads its version, its protocol, the
+//! JSON Schema of the `[discord]` section lookout draws a settings pane from,
+//! and the permissions the operator is asked to grant. A shep too old for a
+//! manifest asks `--version` and `--schema` instead. All three are answered
+//! by [`shep_client::dogs::Probe`], from [`config::Section`]'s own
 //! deserialization type, on the first line of [`main`] and before this
 //! process opens a socket or a file.
 //!
@@ -55,7 +55,10 @@ mod wiring;
 
 use std::{path::PathBuf, process::ExitCode};
 
-use shep_client::{dogs::DogIdentity, shep_core::paths::ShepPaths};
+use shep_client::{
+    dogs::{DogIdentity, Permission, Probe, Verb},
+    shep_core::paths::ShepPaths,
+};
 
 use crate::cli::Action;
 
@@ -81,13 +84,52 @@ fn main() -> ExitCode {
     // spawns this binary with `--version` and then with `--schema`, reads
     // one line of stdout, and kills the process group; a dog that has
     // already started connecting is a dog answering a question late.
-    // `probe` answers either flag and exits, and returns for every other
+    // `answer` answers those flags and exits, and returns for every other
     // run, this dog's own `--print-config` included.
     //
-    // `env!` here rather than inside `probe`: it expands where it is
+    // `env!` here rather than inside `Probe`: it expands where it is
     // written, so a call that spelled it in shep-client would report
     // shep-client's version as this dog's.
-    shep_client::dogs::probe::<config::Section>(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+    //
+    // The three optional permissions are the slash commands that change
+    // something: without them the dog still streams, and each command says
+    // what it was refused.
+    Probe::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        .verb(
+            Verb::new("Stream logs to Discord and drive the flock from it")
+                .with_examples(["shep discord --print-config"]),
+        )
+        .permission(Permission::new(
+            "flock.read",
+            true,
+            "lists the flock for the monitor and the slash commands",
+        ))
+        .permission(Permission::new(
+            "events:log.",
+            true,
+            "streams each sheep's output to its channel",
+        ))
+        .permission(Permission::new(
+            "events:process.",
+            true,
+            "follows sheep starting, stopping and exiting",
+        ))
+        .permission(Permission::new(
+            "flock.control",
+            false,
+            "stops, restarts and reloads sheep and saves the roll from slash commands",
+        ))
+        .permission(Permission::new(
+            "flock.edit",
+            false,
+            "deletes a sheep from a slash command",
+        ))
+        .permission(Permission::new(
+            "logs.manage",
+            false,
+            "flushes and reopens logs from slash commands",
+        ))
+        .answer::<config::Section>();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let action = match Action::parse(args.iter().map(String::as_str)) {
