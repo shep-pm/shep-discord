@@ -53,9 +53,10 @@ the permissions `shep adopt` asks you to grant.
 | `flock.read` | yes | the monitor and the slash commands |
 | `events:log.` | yes | streaming each sheep's output |
 | `events:process.` | yes | following sheep as they start, stop and exit |
-| `flock.control` | no | stop, restart, reload and save from a slash command |
-| `flock.edit` | no | delete from a slash command |
-| `logs.manage` | no | flush and reopen from a slash command |
+| `flock.control` | no | stop, restart, reload and save from a slash command or the monitor |
+| `flock.edit` | no | delete a sheep from a slash command or the monitor |
+| `dogs.control` | no | delete another dog from a slash command or the monitor |
+| `logs.manage` | no | flush and reopen from a slash command or the monitor |
 
 The name it is adopted under is the name shep hands it in `$SHEP_DOG_NAME`,
 and it is also the config key: `dogs.toml` reads `[discord]`. Running the

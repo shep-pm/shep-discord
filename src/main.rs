@@ -117,17 +117,22 @@ fn main() -> ExitCode {
         .permission(Permission::new(
             "flock.control",
             false,
-            "stops, restarts and reloads sheep and saves the roll from slash commands",
+            "stops, restarts and reloads sheep and saves the roll from slash commands and the monitor",
         ))
         .permission(Permission::new(
             "flock.edit",
             false,
-            "deletes a sheep from a slash command",
+            "deletes a sheep from a slash command or the monitor",
+        ))
+        .permission(Permission::new(
+            "dogs.control",
+            false,
+            "deletes another dog from a slash command or the monitor",
         ))
         .permission(Permission::new(
             "logs.manage",
             false,
-            "flushes and reopens logs from slash commands",
+            "flushes and reopens logs from slash commands and the monitor",
         ))
         .answer::<config::Section>();
 
