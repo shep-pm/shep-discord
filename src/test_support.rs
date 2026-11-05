@@ -392,7 +392,10 @@ pub fn sample(name: &str) -> ProcessInfo {
 /// dogs tending it.
 pub fn dog_sample(name: &str) -> ProcessInfo {
     ProcessInfo::builder(0, name, ProcStatus::Online)
-        .dog(Some(DogSource::BuiltIn { grants: None }))
+        .dog(Some(DogSource::BuiltIn {
+            grants: None,
+            events: Vec::new(),
+        }))
         .build()
 }
 
@@ -422,6 +425,7 @@ pub fn worst_case_sample(id: u32) -> ProcessInfo {
             path: "p".repeat(2_000),
             channel: false,
             grants: None,
+            events: Vec::new(),
         }))
         .dog_stale(Some(true))
         .build()

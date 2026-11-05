@@ -30,7 +30,7 @@ exclude = ["/docs/"]
 # protocol number a dog announces has to be at or above the shepherd's
 # `MIN_SUPPORTED`, which announcing 15, shep-core 0.23.0's `PROTOCOL_VERSION`,
 # clears (`MIN_SUPPORTED` is still 8).
-shep-client = "0.23.0"
+shep-client = "0.24.2"
 # `#[derive(JsonSchema)]` expands to absolute `schemars::` paths, so the
 # crate has to be nameable here even though shep-client carries it.
 schemars = { version = "1.2.2", default-features = false, features = ["derive", "std"] }
@@ -43,7 +43,7 @@ tokio = { version = "1", default-features = false, features = ["rt-multi-thread"
 serenity = { version = "0.12", default-features = false, features = ["client", "gateway", "model", "builder", "rustls_backend"] }
 
 [dev-dependencies]
-shep-client = { version = "0.23.0", features = ["test-support"] }
+shep-client = { version = "0.24.2", features = ["test-support"] }
 serde_json = "1"
 tempfile = "3"
 
