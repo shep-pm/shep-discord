@@ -180,7 +180,10 @@ mod tests {
     /// A dog's own row, under whatever name it announced.
     fn dog(id: u32, name: &str) -> ProcessInfo {
         ProcessInfo::builder(id, name, ProcStatus::Online)
-            .dog(Some(DogSource::BuiltIn { grants: None }))
+            .dog(Some(DogSource::BuiltIn {
+                grants: None,
+                events: Vec::new(),
+            }))
             .build()
     }
 

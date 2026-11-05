@@ -453,7 +453,10 @@ mod tests {
             .lambs(Some(vec![Lamb::new(2, "child")]))
             .fold(Some("main".to_owned()))
             .smit(Some("smit".to_owned()))
-            .dog(Some(DogSource::BuiltIn { grants: None }))
+            .dog(Some(DogSource::BuiltIn {
+                grants: None,
+                events: Vec::new(),
+            }))
             .dog_stale(Some(true))
             .build();
 
@@ -462,6 +465,7 @@ mod tests {
                 path: "/usr/local/bin/watchdog".to_owned(),
                 channel: false,
                 grants: None,
+                events: Vec::new(),
             }))
             .build();
 
@@ -530,6 +534,7 @@ mod tests {
             path: "p".repeat(2_000),
             channel: false,
             grants: None,
+            events: Vec::new(),
         });
         worst.dog_stale = Some(true);
 
